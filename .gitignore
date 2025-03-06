@@ -1,0 +1,25 @@
+*.ipch
+*.suo
+*.db
+*.pdb
+*.exe
+*.ilk
+.vs
+.tmp
+*.tlog
+*.obj
+*.idb
+*.log
+*.exp
+*.iobj
+*.ipdb
+bin
+Debug
+Release
+x64
+GameInstaller/GAMEDIRECTORY
+.clang-format
+
+# Special case for Header Commenter tool
+!HeaderCommenter_v*.exe
+headercommenter-config.txt
