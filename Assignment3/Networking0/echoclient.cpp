@@ -27,6 +27,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#if 1
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -43,8 +44,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <chrono>
+#include <iomanip>  // For std::put_time
 
-#if 1
 // ---------------------- Configuration Constants --------------------------
 constexpr int TCP_RECV_BUFFER_SIZE = 1024;
 constexpr int UDP_BUFFER_SIZE = 1500;
@@ -81,9 +82,13 @@ private:
 
 // ---------------------- Simple Logger ------------------------------
 void Log(const std::string& level, const std::string& message) {
-    auto now = std::chrono::system_clock::to_time_t(
-        std::chrono::system_clock::now());
-    std::cout << "[" << level << "] " << std::ctime(&now) << " : " << message << std::endl;
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    struct tm timeInfo;
+    localtime_s(&timeInfo, &now_c);
+    std::cout << "[" << level << "] "
+        << std::put_time(&timeInfo, "%F %T")
+        << " : " << message << std::endl;
 }
 
 // ---------------------- Global Variables -------------------------------

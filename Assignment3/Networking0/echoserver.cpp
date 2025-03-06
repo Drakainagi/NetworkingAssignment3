@@ -19,6 +19,7 @@
          Robustness improvements include enhanced error checking, a RAII socket wrapper,
          a retry limit for UDP transfers, and modularized functions.
 
+         THIS FILE IS STILL IN DEVELOPMENT AND MIGHT NOT WORK AS INTENDED
   Copyright (C) 2025 DigiPen Institute of Technology.
 */
 /* End Header
@@ -28,7 +29,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#if 1
+#if 0
 
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -46,7 +47,7 @@
 #include <cstdlib>
 #include <optional>
 #include <chrono>
-
+#include <iomanip>  // For std::put_time
 // Link with Winsock library.
 #pragma comment(lib, "ws2_32.lib")
 
@@ -69,8 +70,13 @@ constexpr int MAX_RETRIES = 5;       // Maximum number of retransmissions per pa
 // --------------------- Simple Logger Helper -----------------------------
 void Log(const std::string& level, const std::string& message)
 {
-    auto now = std::chrono::system_clock::to_time_t(std::chrono::system_clock::now());
-    std::cout << "[" << level << "] " << std::ctime(&now) << " : " << message << std::endl;
+    auto now = std::chrono::system_clock::now();
+    std::time_t now_c = std::chrono::system_clock::to_time_t(now);
+    struct tm timeInfo;
+    localtime_s(&timeInfo, &now_c);
+    std::cout << "[" << level << "] "
+        << std::put_time(&timeInfo, "%F %T")
+        << " : " << message << std::endl;
 }
 
 // --------------------- RAII Socket Wrapper ------------------------------
