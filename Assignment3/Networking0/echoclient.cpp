@@ -11,8 +11,8 @@
            - Requesting the file list (/l)
            - Requesting a file download (/d <client_ip:udpPort> <filename>)
            - Quitting (/q)
-         The UDP file transfer uses a basic reliable protocol (stop-and-wait
-         with ACKs) to ensure data integrity over a lossy channel.
+         The UDP file transfer uses a basic reliable protocol (selective repeat)
+         to ensure data integrity over a lossy channel.
 
          Robustness improvements include enhanced error checking, a RAII socket
          wrapper, consistent logging, and modularized code sections.
@@ -27,7 +27,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#if 0
+#if 1
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -97,13 +97,15 @@ std::mutex g_sessionMutex;
 std::map<uint32_t, std::string> g_downloadFilenames; // Map sessionID to filename pending.
 std::mutex g_pendingMutex;
 std::string g_pendingFilename;  // Temporary store for the filename requested via /d.
+// Global shutdown flag.
+std::atomic<bool> g_clientShutdown{ false };
 
 // Structure to manage file download session (for writing data to file).
 struct FileDownloadSession {
-    std::string filename;      // Full path for the downloaded file.
-    std::ofstream file;        // Output file stream.
+    std::string filename;        // Full path for the downloaded file.
+    std::ofstream file;          // Output file stream.
     uint32_t expectedFileLength; // Total file size in bytes.
-    uint32_t receivedBytes;    // Count of bytes received so far.
+    uint32_t receivedBytes;      // Count of bytes received so far.
 };
 std::mutex g_fileSessionMutex;
 std::map<uint32_t, FileDownloadSession> g_sessions;
@@ -129,7 +131,7 @@ bool parseDestination(const std::string& dest, std::string& ip, uint16_t& port) 
 //   - File Offset [4 bytes]
 //   - Data Length [4 bytes]
 //   - File Data [variable length]
-// After writing data to the correct file offset, the client sends an ACK.
+// After writing data to the correct file offset, the client sends a 5-byte ACK.
 void udpReceiverThread(SOCKET udpSocket) {
     char buffer[UDP_BUFFER_SIZE];
     sockaddr_in senderAddr;
@@ -140,8 +142,14 @@ void udpReceiverThread(SOCKET udpSocket) {
             reinterpret_cast<sockaddr*>(&senderAddr),
             &senderAddrLen);
         if (bytesReceived <= 0) {
-            Log("WARN", "UDP recvfrom() returned error or zero bytes.");
-            continue; // Error or no data received.
+            // If client is shutting down, exit gracefully without warning.
+            if (g_clientShutdown.load()) {
+                break;
+            }
+            else {
+                Log("WARN", "UDP recvfrom() returned error or zero bytes.");
+                continue;
+            }
         }
         // Check that packet is at least 16 bytes for header.
         if (bytesReceived < 16) {
@@ -189,13 +197,12 @@ void udpReceiverThread(SOCKET udpSocket) {
             }
         }
 
-        // Send ACK: 1 byte flag and duplicate 4 bytes of fileOffset.
-        char ackPacket[9];
+        // Send ACK: 1 byte flag and 4 bytes fileOffset (total 5 bytes).
+        char ackPacket[5];
         ackPacket[0] = 0x1; // ACK flag.
         uint32_t netAck = htonl(fileOffset);
         memcpy(ackPacket + 1, &netAck, 4);
-        memcpy(ackPacket + 5, &netAck, 4);
-        sendto(udpSocket, ackPacket, 9, 0,
+        sendto(udpSocket, ackPacket, 5, 0,
             reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
     }
 }
@@ -220,7 +227,8 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
         while (!recvBuffer.empty()) {
             uint8_t command = recvBuffer[0];
             if (command == CMD_RSP_LISTFILES) {
-                // File list message: 1 byte command, 2 bytes num files, 4 bytes total length, then pairs of [4 bytes filename length, filename].
+                // File list message: 1 byte command, 2 bytes num files, 4 bytes total length,
+                // then pairs of [4 bytes filename length, filename].
                 if (recvBuffer.size() < 7)
                     break; // Not enough data.
                 uint16_t netNumFiles;
@@ -253,7 +261,8 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
                 recvBuffer.erase(recvBuffer.begin(), recvBuffer.begin() + 7 + listLength);
             }
             else if (command == CMD_RSP_DOWNLOAD) {
-                // Download response: 1 byte command, 4 bytes server IP, 2 bytes server UDP port, 4 bytes session ID, 4 bytes file length.
+                // Download response: 1 byte command, 4 bytes server IP, 2 bytes server UDP port,
+                // 4 bytes session ID, 4 bytes file length.
                 if (recvBuffer.size() < 15)
                     break;
                 uint32_t netServerIP;
@@ -323,38 +332,48 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
 
 // ---------------------- User Input Handler -----------------------------
 // Reads user commands from the console and sends appropriate TCP messages.
-void handleUserInput(SOCKET clientSocket) {
+void handleUserInput(SOCKET clientSocket) 
+{
     std::string input;
-    while (std::getline(std::cin, input)) {
+    while (std::getline(std::cin, input)) 
+    {
         if (input.empty())
             continue;
-        if (input == "/q") {
+        if (input == "/q") 
+        {
+            // Set shutdown flag to indicate graceful shutdown.
+            g_clientShutdown = true;
             uint8_t msg = CMD_REQ_QUIT;
             send(clientSocket, reinterpret_cast<const char*>(&msg), 1, 0);
             break;
         }
-        else if (input == "/l") {
+        else if (input == "/l") 
+        {
             uint8_t msg = CMD_REQ_LISTFILES;
             send(clientSocket, reinterpret_cast<const char*>(&msg), 1, 0);
         }
-        else if (input.rfind("/d", 0) == 0) {
+        else if (input.rfind("/d", 0) == 0) 
+        {
             std::istringstream iss(input);
             std::string command, destField, filename;
             iss >> command >> destField >> filename;
-            if (destField.empty() || filename.empty()) {
+            if (destField.empty() || filename.empty()) 
+            {
                 std::cerr << "Invalid /d command format. Usage: /d <client_ip:udpPort> <filename>" << std::endl;
                 continue;
             }
             std::string clientIP;
             uint16_t clientUDPPort;
-            if (!parseDestination(destField, clientIP, clientUDPPort)) {
+            if (!parseDestination(destField, clientIP, clientUDPPort)) 
+            {
                 std::cerr << "Invalid destination format. Use ip:port" << std::endl;
                 continue;
             }
             std::vector<uint8_t> buffer;
             buffer.push_back(CMD_REQ_DOWNLOAD);
             in_addr addr;
-            if (inet_pton(AF_INET, clientIP.c_str(), &addr) != 1) {
+            if (inet_pton(AF_INET, clientIP.c_str(), &addr) != 1) 
+            {
                 std::cerr << "Invalid IP address: " << clientIP << std::endl;
                 continue;
             }
@@ -377,14 +396,16 @@ void handleUserInput(SOCKET clientSocket) {
             send(clientSocket, reinterpret_cast<const char*>(buffer.data()),
                 static_cast<int>(buffer.size()), 0);
         }
-        else {
+        else 
+        {
             std::cerr << "Unknown command. Supported commands: /q, /l, /d" << std::endl;
         }
     }
 }
 
 // ---------------------- Main Function ----------------------------------
-int main() {
+int main() 
+{
     std::string serverIP;
     std::cout << "Server IP Address: ";
     std::getline(std::cin, serverIP);

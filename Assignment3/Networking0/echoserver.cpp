@@ -24,7 +24,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#if 1  // Enable compilation
+#if 0  // Enable compilation
 
 #define NOMINMAX
 #include <winsock2.h>
