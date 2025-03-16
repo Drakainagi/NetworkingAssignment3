@@ -1,9 +1,10 @@
 /* Start Header
 *********************************************************************
   \file    ftpclient.cpp
-  \author  weijie.soh
+  \authors weijie.soh (Soh Wei Jie)
+           lee.v (Victor Lee)
   \par     DigiPen Institute of Technology
-  \date    6 March 2025
+  \date    16 March 2025
   \brief
          This file implements a multi-threaded FTP client that communicates
          with the server via TCP for control messages and via UDP for file
@@ -47,8 +48,8 @@
 #include <iomanip>  // For std::put_time
 
 // ---------------------- Configuration Constants --------------------------
-constexpr int TCP_RECV_BUFFER_SIZE = 1024;
-constexpr int UDP_BUFFER_SIZE = 1500;
+constexpr int TCP_RECV_BUFFER_SIZE = 32768; //increased size for CHUNK_SIZE
+constexpr int UDP_BUFFER_SIZE = 50000; //BUFFER SIZE must be more than CHUNK_SIZE
 
 // ---------------------- Command ID Definitions --------------------------
 #define CMD_REQ_QUIT         0x1    // /q
@@ -168,6 +169,21 @@ void udpReceiverThread(SOCKET udpSocket) {
         memcpy(&netFileOffset, buffer + 8, 4);
         uint32_t fileOffset = ntohl(netFileOffset);
 
+        // Validate fileOffset before sending ACK
+        if (fileOffset < fileLength && fileOffset % TCP_RECV_BUFFER_SIZE == 0) {
+            char ackPacket[5];
+            ackPacket[0] = 0x1; // ACK flag.
+            uint32_t netAck = htonl(fileOffset);
+            memcpy(ackPacket + 1, &netAck, 4);
+            sendto(udpSocket, ackPacket, 5, 0, reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
+
+            Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset / TCP_RECV_BUFFER_SIZE));
+        }
+        else {
+            Log("WARN", "Received out-of-range packet: " + std::to_string(fileOffset));
+        }
+
+
         uint32_t netDataLength;
         memcpy(&netDataLength, buffer + 12, 4);
         uint32_t dataLength = ntohl(netDataLength);
@@ -198,12 +214,15 @@ void udpReceiverThread(SOCKET udpSocket) {
         }
 
         // Send ACK: 1 byte flag and 4 bytes fileOffset (total 5 bytes).
+// Send ACK immediately after receiving a packet
         char ackPacket[5];
         ackPacket[0] = 0x1; // ACK flag.
         uint32_t netAck = htonl(fileOffset);
         memcpy(ackPacket + 1, &netAck, 4);
         sendto(udpSocket, ackPacket, 5, 0,
             reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
+        Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset));
+
     }
 }
 
@@ -332,14 +351,14 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
 
 // ---------------------- User Input Handler -----------------------------
 // Reads user commands from the console and sends appropriate TCP messages.
-void handleUserInput(SOCKET clientSocket) 
+void handleUserInput(SOCKET clientSocket)
 {
     std::string input;
-    while (std::getline(std::cin, input)) 
+    while (std::getline(std::cin, input))
     {
         if (input.empty())
             continue;
-        if (input == "/q") 
+        if (input == "/q")
         {
             // Set shutdown flag to indicate graceful shutdown.
             g_clientShutdown = true;
@@ -347,24 +366,24 @@ void handleUserInput(SOCKET clientSocket)
             send(clientSocket, reinterpret_cast<const char*>(&msg), 1, 0);
             break;
         }
-        else if (input == "/l") 
+        else if (input == "/l")
         {
             uint8_t msg = CMD_REQ_LISTFILES;
             send(clientSocket, reinterpret_cast<const char*>(&msg), 1, 0);
         }
-        else if (input.rfind("/d", 0) == 0) 
+        else if (input.rfind("/d", 0) == 0)
         {
             std::istringstream iss(input);
             std::string command, destField, filename;
             iss >> command >> destField >> filename;
-            if (destField.empty() || filename.empty()) 
+            if (destField.empty() || filename.empty())
             {
                 std::cerr << "Invalid /d command format. Usage: /d <client_ip:udpPort> <filename>" << std::endl;
                 continue;
             }
             std::string clientIP;
             uint16_t clientUDPPort;
-            if (!parseDestination(destField, clientIP, clientUDPPort)) 
+            if (!parseDestination(destField, clientIP, clientUDPPort))
             {
                 std::cerr << "Invalid destination format. Use ip:port" << std::endl;
                 continue;
@@ -372,7 +391,7 @@ void handleUserInput(SOCKET clientSocket)
             std::vector<uint8_t> buffer;
             buffer.push_back(CMD_REQ_DOWNLOAD);
             in_addr addr;
-            if (inet_pton(AF_INET, clientIP.c_str(), &addr) != 1) 
+            if (inet_pton(AF_INET, clientIP.c_str(), &addr) != 1)
             {
                 std::cerr << "Invalid IP address: " << clientIP << std::endl;
                 continue;
@@ -396,7 +415,7 @@ void handleUserInput(SOCKET clientSocket)
             send(clientSocket, reinterpret_cast<const char*>(buffer.data()),
                 static_cast<int>(buffer.size()), 0);
         }
-        else 
+        else
         {
             std::cerr << "Unknown command. Supported commands: /q, /l, /d" << std::endl;
         }
@@ -404,7 +423,7 @@ void handleUserInput(SOCKET clientSocket)
 }
 
 // ---------------------- Main Function ----------------------------------
-int main() 
+int main()
 {
     std::string serverIP;
     std::cout << "Server IP Address: ";
@@ -463,22 +482,23 @@ int main()
 
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (udpSocket == INVALID_SOCKET) {
-        std::cerr << "Failed to create UDP socket." << std::endl;
-        closesocket(clientSocket);
-        WSACleanup();
+        Log("ERROR", "Failed to create UDP socket.");
         return 1;
     }
-    sockaddr_in clientUDPAddr;
+
+    sockaddr_in clientUDPAddr{};
     clientUDPAddr.sin_family = AF_INET;
     clientUDPAddr.sin_addr.s_addr = INADDR_ANY;
     clientUDPAddr.sin_port = htons(clientUDPPort);
-    if (bind(udpSocket, reinterpret_cast<sockaddr*>(&clientUDPAddr), sizeof(clientUDPAddr)) == SOCKET_ERROR) {
-        std::cerr << "Failed to bind UDP socket." << std::endl;
-        closesocket(udpSocket);
-        closesocket(clientSocket);
-        WSACleanup();
+
+    if (bind(udpSocket, (sockaddr*)&clientUDPAddr, sizeof(clientUDPAddr)) == SOCKET_ERROR) {
+        Log("ERROR", "Failed to bind UDP socket to port " + std::to_string(clientUDPPort));
         return 1;
     }
+
+    Log("INFO", "Client UDP socket bound to port " + std::to_string(clientUDPPort));
+
+
 
     std::thread udpThread(udpReceiverThread, udpSocket);
     std::thread tcpReceiverThread(receiveFromServer, clientSocket, udpSocket);

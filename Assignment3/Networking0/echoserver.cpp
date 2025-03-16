@@ -1,10 +1,11 @@
-/* Start Header
+﻿/* Start Header
 *****************************************************************/
 /*!
   \file   ftpserver.cpp
-  \author weijie.soh
+  \authors weijie.soh (Soh Wei Jie)
+           lee.v (Victor Lee)
   \par    DigiPen Institute of Technology
-  \date   6 March 2025
+  \date   16 March 2025
   \brief
          This file implements a robust multi-threaded FTP server using Winsock and a thread pool.
          It supports listing available files (/l), file download requests (/d <client_ip:udpPort> <filename>),
@@ -24,7 +25,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#if 0  // Enable compilation
+// Enable compilation
 
 #define NOMINMAX
 #include <winsock2.h>
@@ -41,7 +42,7 @@
 #include <atomic>
 #include <cstring>
 #include <cstdlib>
-#include <optional>
+//#include <optional>
 #include <chrono>
 #include <iomanip>
 #include <algorithm> // For std::sort
@@ -61,24 +62,24 @@
 
 // --------------------- Global Configurable Parameters --------------------------
 // These parameters are now global variables that can be set via a configuration file.
-int CHUNK_SIZE = 1024;     // UDP chunk size (bytes).
-int ACK_TIMEOUT = 1000;    // Timeout in ms for receiving an ACK.
+int CHUNK_SIZE = 32768;     // UDP chunk size (bytes). //Higher means faster download speed
+int ACK_TIMEOUT = 200;    // Timeout in ms for receiving an ACK.
 int MAX_RETRIES = 5;       // Maximum number of retransmissions per window.
-int WINDOW_SIZE = 4;       // Number of packets allowed in the pipeline window.
+int WINDOW_SIZE = 64;       // Number of packets allowed in the pipeline window.
 
 // --------------------- Configuration File Loader -----------------------------
 // Reads key=value pairs from a configuration file ("server_config.txt").
 // Expected keys: CHUNK_SIZE, ACK_TIMEOUT, MAX_RETRIES, WINDOW_SIZE
-void loadConfiguration(const std::string& configFilePath) 
+void loadConfiguration(const std::string& configFilePath)
 {
     std::ifstream configFile(configFilePath);
-    if (!configFile.is_open()) 
+    if (!configFile.is_open())
     {
         std::cerr << "[WARN] Could not open config file: " << configFilePath << ". Using default parameters." << std::endl;
         return;
     }
     std::string line;
-    while (std::getline(configFile, line)) 
+    while (std::getline(configFile, line))
     {
         // Remove comments and whitespace.
         if (line.empty() || line[0] == '#')
@@ -86,7 +87,7 @@ void loadConfiguration(const std::string& configFilePath)
         std::istringstream iss(line);
         std::string key, equalSign;
         int value;
-        if (iss >> key >> equalSign >> value && equalSign == "=") 
+        if (iss >> key >> equalSign >> value && equalSign == "=")
         {
             if (key == "CHUNK_SIZE")
                 CHUNK_SIZE = value;
@@ -118,21 +119,21 @@ void Log(const std::string& level, const std::string& message)
 }
 
 // --------------------- RAII Socket Wrapper ------------------------------
-class SocketRAII 
+class SocketRAII
 {
 public:
     SocketRAII(SOCKET s = INVALID_SOCKET) : sock(s) {}
-    ~SocketRAII() 
+    ~SocketRAII()
     {
-        if (sock != INVALID_SOCKET) 
+        if (sock != INVALID_SOCKET)
         {
             closesocket(sock);
         }
     }
     SOCKET get() const { return sock; }
-    void reset(SOCKET s = INVALID_SOCKET) 
+    void reset(SOCKET s = INVALID_SOCKET)
     {
-        if (sock != INVALID_SOCKET) 
+        if (sock != INVALID_SOCKET)
         {
             closesocket(sock);
         }
@@ -156,9 +157,9 @@ std::atomic<bool> serverRunning(true);       // Global flag for server run state
 
 // --------------------- Console Control Handler ---------------------------
 // This handler will catch CTRL+C or console close events and signal the server to shut down.
-BOOL WINAPI ConsoleHandler(DWORD signal) 
+BOOL WINAPI ConsoleHandler(DWORD signal)
 {
-    if (signal == CTRL_C_EVENT || signal == CTRL_CLOSE_EVENT) 
+    if (signal == CTRL_C_EVENT || signal == CTRL_CLOSE_EVENT)
     {
         serverRunning = false;
         Log("INFO", "Shutdown signal received. Stopping server...");
@@ -171,25 +172,25 @@ BOOL WINAPI ConsoleHandler(DWORD signal)
 
 // Function: getFileList
 // Scans the provided directory and returns a sorted vector of filenames (excluding directories).
-std::vector<std::string> getFileList(const std::string& directory) 
+std::vector<std::string> getFileList(const std::string& directory)
 {
     std::vector<std::string> fileList;
     std::string searchPath = directory + "\\*";
     WIN32_FIND_DATAA findData;
     HANDLE hFind = FindFirstFileA(searchPath.c_str(), &findData);
-    if (hFind != INVALID_HANDLE_VALUE) 
+    if (hFind != INVALID_HANDLE_VALUE)
     {
-        do 
+        do
         {
             // Exclude directories.
-            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY)) 
+            if (!(findData.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
             {
                 fileList.push_back(findData.cFileName);
             }
         } while (FindNextFileA(hFind, &findData));
         FindClose(hFind);
     }
-    else 
+    else
     {
         Log("ERROR", "FindFirstFileA failed for directory: " + directory);
     }
@@ -200,7 +201,7 @@ std::vector<std::string> getFileList(const std::string& directory)
 
 // Function: fileExistsAndSize
 // Checks if a file exists and retrieves its size.
-bool fileExistsAndSize(const std::string& filePath, uint32_t& fileSize) 
+bool fileExistsAndSize(const std::string& filePath, uint32_t& fileSize)
 {
     std::ifstream file(filePath, std::ios::binary | std::ios::ate);
     if (!file.is_open())
@@ -218,56 +219,45 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
     uint32_t sessionId, uint32_t fileSize)
 {
     std::ifstream file(filePath, std::ios::binary);
-    if (!file.is_open()) 
-    {
+    if (!file.is_open()) {
         Log("ERROR", "Failed to open file for UDP selective repeat transfer: " + filePath);
         return;
     }
 
-    // Calculate total number of packets needed.
     uint32_t totalPackets = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
     std::vector<bool> acked(totalPackets, false);
-    uint32_t base_seq = 0;     // Lowest sequence number not yet acknowledged.
-    int retransmitCount = 0;   // Count retransmissions for the current window.
+    uint32_t base_seq = 0;
+    int retransmitCount = 0;
 
-    // Set socket receive timeout for ACKs.
     int timeout = ACK_TIMEOUT;
     setsockopt(udpSocket, SOL_SOCKET, SO_RCVTIMEO, reinterpret_cast<const char*>(&timeout), sizeof(timeout));
 
-    while (base_seq < totalPackets && serverRunning) 
+    while (base_seq < totalPackets && serverRunning)
     {
-        // Send all packets in the current window that are not yet acknowledged.
         uint32_t windowEnd = std::min(base_seq + static_cast<uint32_t>(WINDOW_SIZE), totalPackets);
-        for (uint32_t seq = base_seq; seq < windowEnd; seq++) 
+        for (uint32_t seq = base_seq; seq < windowEnd; seq++)
         {
-            if (!acked[seq]) 
+            if (!acked[seq])
             {
                 uint32_t offset = seq * CHUNK_SIZE;
-                file.seekg(offset);
-                std::vector<char> buffer(CHUNK_SIZE, 0);
-                file.read(buffer.data(), CHUNK_SIZE);
-                std::streamsize bytesRead = file.gcount();
-                if (bytesRead <= 0)
-                    break; // Should not happen if fileSize is accurate.
+                uint32_t remainingBytes = fileSize - offset;
+                uint32_t dataSize = std::min(remainingBytes, static_cast<uint32_t>(CHUNK_SIZE)); // ✅ Fix
 
-                // Build packet header:
-                // - 4 bytes: sessionId
-                // - 4 bytes: fileSize
-                // - 4 bytes: offset
-                // - 4 bytes: data length
+                file.seekg(offset);
+                std::vector<char> buffer(dataSize, 0);
+                file.read(buffer.data(), dataSize);
+                std::streamsize bytesRead = file.gcount();
+                if (bytesRead <= 0) break;
+
                 uint32_t netSessionId = htonl(sessionId);
                 uint32_t netFileSize = htonl(fileSize);
                 uint32_t netOffset = htonl(offset);
                 uint32_t netDataLength = htonl(static_cast<uint32_t>(bytesRead));
                 std::vector<uint8_t> packet;
-                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netSessionId),
-                    reinterpret_cast<uint8_t*>(&netSessionId) + 4);
-                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netFileSize),
-                    reinterpret_cast<uint8_t*>(&netFileSize) + 4);
-                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netOffset),
-                    reinterpret_cast<uint8_t*>(&netOffset) + 4);
-                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netDataLength),
-                    reinterpret_cast<uint8_t*>(&netDataLength) + 4);
+                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netSessionId), reinterpret_cast<uint8_t*>(&netSessionId) + 4);
+                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netFileSize), reinterpret_cast<uint8_t*>(&netFileSize) + 4);
+                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netOffset), reinterpret_cast<uint8_t*>(&netOffset) + 4);
+                packet.insert(packet.end(), reinterpret_cast<uint8_t*>(&netDataLength), reinterpret_cast<uint8_t*>(&netDataLength) + 4);
                 packet.insert(packet.end(), buffer.begin(), buffer.begin() + bytesRead);
 
                 {
@@ -275,8 +265,7 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
                     int sentBytes = sendto(udpSocket, reinterpret_cast<const char*>(packet.data()),
                         static_cast<int>(packet.size()), 0,
                         reinterpret_cast<const sockaddr*>(&clientAddr), sizeof(clientAddr));
-                    if (sentBytes == SOCKET_ERROR) 
-                    {
+                    if (sentBytes == SOCKET_ERROR) {
                         Log("ERROR", "sendto() failed for session " + std::to_string(sessionId) +
                             " for packet " + std::to_string(seq));
                     }
@@ -285,74 +274,66 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
                     " for session " + std::to_string(sessionId));
             }
         }
-        // Wait for ACKs for packets in the window.
+
         bool gotAck = false;
-        while (true) 
+        while (true)
         {
-            // Expect ACK messages of 5 bytes: 1 byte flag, 4 bytes sequence number.
             uint8_t ackBuffer[5] = { 0 };
             int ackBytes = recvfrom(udpSocket, reinterpret_cast<char*>(ackBuffer), sizeof(ackBuffer), 0, nullptr, nullptr);
-            if (ackBytes == 5) 
+            if (ackBytes == 5)
             {
                 uint8_t flag = ackBuffer[0];
                 uint32_t netSeq;
                 memcpy(&netSeq, ackBuffer + 1, 4);
                 uint32_t ackSeq = ntohl(netSeq);
-                if (flag & 0x1) 
-                {
-                    if (ackSeq < totalPackets && !acked[ackSeq]) 
-                    {
-                        acked[ackSeq] = true;
-                        gotAck = true;
-                        Log("DEBUG", "Received ACK for packet " + std::to_string(ackSeq) +
-                            " in session " + std::to_string(sessionId));
-                        // Slide window: advance base_seq while packets are acknowledged.
-                        while (base_seq < totalPackets && acked[base_seq]) 
-                        {
-                            base_seq++;
-                        }
-                    }
-                    else 
-                    {
-                        Log("DEBUG", "Received duplicate or out-of-range ACK for packet " + std::to_string(ackSeq) +
-                            " in session " + std::to_string(sessionId));
+
+                if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0) {
+                    uint32_t seqIndex = ackSeq / CHUNK_SIZE;
+                    if (seqIndex < totalPackets && !acked[seqIndex]) {
+                        acked[seqIndex] = true;
+                        Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex));
+                        gotAck = true;  // ✅ Fix
                     }
                 }
-                else 
-                {
-                    Log("WARN", "Received ACK with incorrect flag in session " +
-                        std::to_string(sessionId));
+                else {
+                    Log("WARN", "Received invalid or duplicate ACK for packet " + std::to_string(ackSeq));
                 }
             }
             else {
-                // No more ACKs available (likely timeout).
                 break;
             }
         }
+
         if (!gotAck)
         {
             retransmitCount++;
             Log("WARN", "Timeout waiting for ACKs in session " + std::to_string(sessionId) +
                 ". Retransmitting window starting at packet " + std::to_string(base_seq));
-            if (retransmitCount > MAX_RETRIES) 
+            if (retransmitCount > MAX_RETRIES)
             {
                 Log("ERROR", "Max retransmissions reached in session " + std::to_string(sessionId) +
                     ". Aborting transfer.");
                 break;
             }
         }
-        else 
+        else
         {
             retransmitCount = 0;
+        }
+
+        // ✅ Fix: Move base_seq forward
+        while (base_seq < totalPackets && acked[base_seq]) {
+            base_seq++;
         }
     }
     file.close();
     Log("INFO", "Completed selective repeat file transfer for session " + std::to_string(sessionId));
 }
 
+
 // --------------------- ClientInfo Structure -----------------------------
 // For TCP control connections.
-struct ClientInfo 
+struct ClientInfo
 {
     SOCKET socket;
     std::string ip;    // Client IP in dotted-decimal format.
@@ -366,11 +347,11 @@ void handleClient(ClientInfo client)
     std::vector<uint8_t> messageBuffer;
     uint8_t recvBuffer[1024] = { 0 };
 
-    while (true) 
+    while (true)
     {
         int bytesReceived = recv(client.socket, reinterpret_cast<char*>(recvBuffer),
             sizeof(recvBuffer), 0);
-        if (bytesReceived <= 0) 
+        if (bytesReceived <= 0)
         {
             Log("INFO", "Client disconnected: " + client.ip + ":" + std::to_string(client.port));
             break;
@@ -379,17 +360,17 @@ void handleClient(ClientInfo client)
         messageBuffer.insert(messageBuffer.end(), recvBuffer, recvBuffer + bytesReceived);
 
         // Process complete messages.
-        while (!messageBuffer.empty()) 
+        while (!messageBuffer.empty())
         {
             uint8_t command = messageBuffer[0];
 
             // CMD_REQ_QUIT (/q): Quit command.
-            if (command == CMD_REQ_QUIT) 
+            if (command == CMD_REQ_QUIT)
             {
                 goto CLEANUP;
             }
             // CMD_REQ_LISTFILES (/l): Request for file list.
-            else if (command == CMD_REQ_LISTFILES) 
+            else if (command == CMD_REQ_LISTFILES)
             {
                 std::vector<uint8_t> listMsg;
                 listMsg.push_back(CMD_RSP_LISTFILES);
@@ -410,7 +391,7 @@ void handleClient(ClientInfo client)
                     reinterpret_cast<uint8_t*>(&netTotalListLen) + 4);
 
                 // Append each file: 4 bytes filename length and filename string.
-                for (const auto& file : files) 
+                for (const auto& file : files)
                 {
                     uint32_t fileLen = static_cast<uint32_t>(file.size());
                     uint32_t netFileLen = htonl(fileLen);
@@ -420,7 +401,7 @@ void handleClient(ClientInfo client)
                 }
                 int sent = send(client.socket, reinterpret_cast<const char*>(listMsg.data()),
                     static_cast<int>(listMsg.size()), 0);
-                if (sent == SOCKET_ERROR) 
+                if (sent == SOCKET_ERROR)
                 {
                     Log("ERROR", "Failed to send file list to client " + client.ip);
                 }
@@ -428,7 +409,7 @@ void handleClient(ClientInfo client)
                 messageBuffer.erase(messageBuffer.begin());
             }
             // CMD_REQ_DOWNLOAD (/d): Request to download a file.
-            else if (command == CMD_REQ_DOWNLOAD) 
+            else if (command == CMD_REQ_DOWNLOAD)
             {
                 const size_t headerSize = 1 + 4 + 2 + 4;
                 if (messageBuffer.size() < headerSize)
@@ -460,7 +441,7 @@ void handleClient(ClientInfo client)
 
                 std::string fullPath = g_fileDirectory + "\\" + filename;
                 uint32_t fileSize = 0;
-                if (!fileExistsAndSize(fullPath, fileSize)) 
+                if (!fileExistsAndSize(fullPath, fileSize))
                 {
                     uint8_t errorMsg = CMD_DOWNLOAD_ERROR;
                     send(client.socket, reinterpret_cast<const char*>(&errorMsg), 1, 0);
@@ -505,7 +486,7 @@ void handleClient(ClientInfo client)
                 // Launch selective repeat file transfer in a separate thread.
                 std::thread(sendFileViaUDP_SelectiveRepeat, g_udpSocket.get(), clientUDPStruct, fullPath, sessionId, fileSize).detach();
             }
-            else 
+            else
             {
                 // Unknown command; discard one byte and continue.
                 messageBuffer.erase(messageBuffer.begin());
@@ -518,7 +499,7 @@ CLEANUP:
 }
 
 // --------------------- TaskQueue Processing Function --------------------
-bool processClient(ClientInfo client) 
+bool processClient(ClientInfo client)
 {
     handleClient(client);
     return true; // Continue processing tasks.
@@ -530,7 +511,7 @@ auto onDisconnect = []() {}; // (Optional) Disconnection callback.
 int main()
 {
     // Set the console control handler for graceful shutdown.
-    if (!SetConsoleCtrlHandler(ConsoleHandler, TRUE)) 
+    if (!SetConsoleCtrlHandler(ConsoleHandler, TRUE))
     {
         Log("ERROR", "Could not set control handler");
         return 1;
@@ -542,7 +523,7 @@ int main()
     // Initialize Winsock.
     WSADATA wsaData;
     int errorCode = WSAStartup(MAKEWORD(2, 2), &wsaData);
-    if (errorCode != 0) 
+    if (errorCode != 0)
     {
         Log("ERROR", "WSAStartup() failed: " + std::to_string(errorCode));
         return errorCode;
@@ -560,7 +541,7 @@ int main()
 
     // Create UDP Socket for File Transfers.
     SOCKET udpSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (udpSock == INVALID_SOCKET) 
+    if (udpSock == INVALID_SOCKET)
     {
         Log("ERROR", "Failed to create UDP socket.");
         WSACleanup();
@@ -571,7 +552,7 @@ int main()
     udpAddr.sin_family = AF_INET;
     udpAddr.sin_addr.s_addr = INADDR_ANY;
     udpAddr.sin_port = htons(g_serverUDPPort);
-    if (bind(g_udpSocket.get(), reinterpret_cast<sockaddr*>(&udpAddr), sizeof(udpAddr)) == SOCKET_ERROR) 
+    if (bind(g_udpSocket.get(), reinterpret_cast<sockaddr*>(&udpAddr), sizeof(udpAddr)) == SOCKET_ERROR)
     {
         Log("ERROR", "Failed to bind UDP socket.");
         closesocket(g_udpSocket.get());
@@ -588,7 +569,7 @@ int main()
     hints.ai_flags = AI_PASSIVE;
 
     errorCode = getaddrinfo(NULL, tcpPortStr.c_str(), &hints, &info);
-    if (errorCode != 0 || info == nullptr) 
+    if (errorCode != 0 || info == nullptr)
     {
         Log("ERROR", "getaddrinfo() failed.");
         closesocket(g_udpSocket.get());
@@ -597,7 +578,7 @@ int main()
     }
 
     SOCKET listenerSocket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
-    if (listenerSocket == INVALID_SOCKET) 
+    if (listenerSocket == INVALID_SOCKET)
     {
         Log("ERROR", "socket() failed.");
         freeaddrinfo(info);
@@ -607,7 +588,7 @@ int main()
     }
 
     errorCode = bind(listenerSocket, info->ai_addr, static_cast<int>(info->ai_addrlen));
-    if (errorCode != 0) 
+    if (errorCode != 0)
     {
         Log("ERROR", "bind() failed for TCP listener.");
         closesocket(listenerSocket);
@@ -619,7 +600,7 @@ int main()
     freeaddrinfo(info);
 
     errorCode = listen(listenerSocket, SOMAXCONN);
-    if (errorCode != 0) 
+    if (errorCode != 0)
     {
         Log("ERROR", "listen() failed.");
         closesocket(listenerSocket);
@@ -630,7 +611,7 @@ int main()
 
     // Determine and Display Server IP.
     char localHostName[256] = { 0 };
-    if (gethostname(localHostName, sizeof(localHostName)) == SOCKET_ERROR) 
+    if (gethostname(localHostName, sizeof(localHostName)) == SOCKET_ERROR)
     {
         Log("ERROR", "gethostname() failed.");
         closesocket(listenerSocket);
@@ -644,7 +625,7 @@ int main()
     hints2.ai_protocol = IPPROTO_TCP;
     addrinfo* localInfo = nullptr;
     errorCode = getaddrinfo(localHostName, tcpPortStr.c_str(), &hints2, &localInfo);
-    if (errorCode != 0 || localInfo == nullptr) 
+    if (errorCode != 0 || localInfo == nullptr)
     {
         Log("ERROR", "getaddrinfo() for local host failed.");
         closesocket(listenerSocket);
@@ -670,12 +651,12 @@ int main()
         clientQueue(NUM_OF_THREADS, NUM_OF_TASK_SLOTS, processClient, onDisconnect);
 
     // Main Accept Loop.
-    while (serverRunning) 
+    while (serverRunning)
     {
         sockaddr clientAddr = {};
         int clientAddrLen = sizeof(clientAddr);
         SOCKET clientSocket = accept(listenerSocket, &clientAddr, &clientAddrLen);
-        if (clientSocket == INVALID_SOCKET) 
+        if (clientSocket == INVALID_SOCKET)
         {
             if (!serverRunning) break; // Break if shutdown was signaled.
             Log("ERROR", "accept() failed.");
@@ -707,4 +688,3 @@ int main()
 
     return 0;
 }
-#endif
