@@ -27,6 +27,7 @@
 
 // Enable compilation
 
+#if 1
 #define NOMINMAX
 #include <winsock2.h>
 #include <ws2tcpip.h>
@@ -239,6 +240,12 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
         {
             if (!acked[seq])
             {
+                // Debug TEST: Introduce artificial packet loss (simulating Ethernet break)
+                if (rand() % 100 < 10) {  // 10% chance to drop a packet
+                    Log("TEST", "Artificially dropping packet " + std::to_string(seq) + " to simulate network loss.");
+                    continue;  // Simulate a lost packet by not sending it
+                }
+
                 uint32_t offset = seq * CHUNK_SIZE;
                 uint32_t remainingBytes = fileSize - offset;
                 uint32_t dataSize = std::min(remainingBytes, static_cast<uint32_t>(CHUNK_SIZE)); // ✅ Fix
@@ -309,6 +316,13 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
             retransmitCount++;
             Log("WARN", "Timeout waiting for ACKs in session " + std::to_string(sessionId) +
                 ". Retransmitting window starting at packet " + std::to_string(base_seq));
+
+            // 🔥 TEST: Introduce artificial retransmission delay
+            if (rand() % 100 < 5) {  // 5% chance to add delay before retransmitting
+                Log("TEST", "Artificial delay before retransmitting packet " + std::to_string(base_seq));
+                std::this_thread::sleep_for(std::chrono::milliseconds(500));  // 500ms delay
+            }
+
             if (retransmitCount > MAX_RETRIES)
             {
                 Log("ERROR", "Max retransmissions reached in session " + std::to_string(sessionId) +
@@ -321,7 +335,7 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
             retransmitCount = 0;
         }
 
-        // ✅ Fix: Move base_seq forward
+        //  Fix: Move base_seq forward
         while (base_seq < totalPackets && acked[base_seq]) {
             base_seq++;
         }
@@ -688,3 +702,4 @@ int main()
 
     return 0;
 }
+#endif

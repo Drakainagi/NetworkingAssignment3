@@ -1,4 +1,4 @@
-/* Start Header
+﻿/* Start Header
 *********************************************************************
   \file    ftpclient.cpp
   \authors weijie.soh (Soh Wei Jie)
@@ -28,7 +28,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#if 1
+#if 0
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -133,6 +133,9 @@ bool parseDestination(const std::string& dest, std::string& ip, uint16_t& port) 
 //   - Data Length [4 bytes]
 //   - File Data [variable length]
 // After writing data to the correct file offset, the client sends a 5-byte ACK.
+// ---------------------- UDP Receiver Thread ----------------------------
+// This function receives file data from the server over UDP.
+// It dynamically extracts CHUNK_SIZE based on received packets.
 void udpReceiverThread(SOCKET udpSocket) {
     char buffer[UDP_BUFFER_SIZE];
     sockaddr_in senderAddr;
@@ -143,20 +146,18 @@ void udpReceiverThread(SOCKET udpSocket) {
             reinterpret_cast<sockaddr*>(&senderAddr),
             &senderAddrLen);
         if (bytesReceived <= 0) {
-            // If client is shutting down, exit gracefully without warning.
             if (g_clientShutdown.load()) {
                 break;
             }
-            else {
-                Log("WARN", "UDP recvfrom() returned error or zero bytes.");
-                continue;
-            }
+            Log("WARN", "UDP recvfrom() returned error or zero bytes.");
+            continue;
         }
-        // Check that packet is at least 16 bytes for header.
+
         if (bytesReceived < 16) {
             Log("WARN", "Received UDP packet too short.");
             continue;
         }
+
         uint32_t netSessionId;
         memcpy(&netSessionId, buffer, 4);
         uint32_t sessionId = ntohl(netSessionId);
@@ -169,60 +170,52 @@ void udpReceiverThread(SOCKET udpSocket) {
         memcpy(&netFileOffset, buffer + 8, 4);
         uint32_t fileOffset = ntohl(netFileOffset);
 
-        // Validate fileOffset before sending ACK
-        if (fileOffset < fileLength && fileOffset % TCP_RECV_BUFFER_SIZE == 0) {
+        // 🛠 **Extract the dynamic CHUNK_SIZE from packet**
+        uint32_t netDataLength;
+        memcpy(&netDataLength, buffer + 12, 4);
+        uint32_t inferredChunkSize = ntohl(netDataLength);  // Extracted CHUNK_SIZE
+
+        // ✅ Use dynamically inferred `CHUNK_SIZE` for validation
+        if (fileOffset < fileLength && fileOffset % inferredChunkSize == 0) {
+
+            if (bytesReceived < 16 + inferredChunkSize) {
+                Log("WARN", "Incomplete UDP packet for session " + std::to_string(sessionId));
+                continue;
+            }
+            char* fileData = buffer + 16;
+
+            {
+                std::lock_guard<std::mutex> lock(g_fileSessionMutex);
+                auto it = g_sessions.find(sessionId);
+                if (it == g_sessions.end()) {
+                    Log("INFO", "No active session for sessionID " + std::to_string(sessionId));
+                    continue;
+                }
+                FileDownloadSession& session = it->second;
+                session.file.seekp(fileOffset, std::ios::beg);
+                session.file.write(fileData, inferredChunkSize);
+                session.receivedBytes += inferredChunkSize;
+
+                if (session.receivedBytes >= session.expectedFileLength) {
+                    session.file.close();
+                    Log("INFO", "Download complete: " + session.filename +
+                        " (" + std::to_string(session.expectedFileLength) + " bytes)");
+                    g_sessions.erase(it);
+                }
+            }
+
+            // ✅ Send ACK after writing data
             char ackPacket[5];
             ackPacket[0] = 0x1; // ACK flag.
             uint32_t netAck = htonl(fileOffset);
             memcpy(ackPacket + 1, &netAck, 4);
-            sendto(udpSocket, ackPacket, 5, 0, reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
-
-            Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset / TCP_RECV_BUFFER_SIZE));
+            sendto(udpSocket, ackPacket, 5, 0,
+                reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
+            Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset/ inferredChunkSize));
         }
         else {
             Log("WARN", "Received out-of-range packet: " + std::to_string(fileOffset));
         }
-
-
-        uint32_t netDataLength;
-        memcpy(&netDataLength, buffer + 12, 4);
-        uint32_t dataLength = ntohl(netDataLength);
-
-        if (bytesReceived < 16 + dataLength) {
-            Log("WARN", "Incomplete UDP packet for session " + std::to_string(sessionId));
-            continue;
-        }
-        char* fileData = buffer + 16;
-
-        {
-            std::lock_guard<std::mutex> lock(g_fileSessionMutex);
-            auto it = g_sessions.find(sessionId);
-            if (it == g_sessions.end()) {
-                Log("INFO", "No active session for sessionID " + std::to_string(sessionId));
-                continue;
-            }
-            FileDownloadSession& session = it->second;
-            session.file.seekp(fileOffset, std::ios::beg);
-            session.file.write(fileData, dataLength);
-            session.receivedBytes += dataLength;
-            if (session.receivedBytes >= session.expectedFileLength) {
-                session.file.close();
-                Log("INFO", "Download complete: " + session.filename +
-                    " (" + std::to_string(session.expectedFileLength) + " bytes)");
-                g_sessions.erase(it);
-            }
-        }
-
-        // Send ACK: 1 byte flag and 4 bytes fileOffset (total 5 bytes).
-// Send ACK immediately after receiving a packet
-        char ackPacket[5];
-        ackPacket[0] = 0x1; // ACK flag.
-        uint32_t netAck = htonl(fileOffset);
-        memcpy(ackPacket + 1, &netAck, 4);
-        sendto(udpSocket, ackPacket, 5, 0,
-            reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
-        Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset));
-
     }
 }
 
