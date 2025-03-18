@@ -156,7 +156,6 @@ std::string g_serverIP;        // Server IP address (as a string).
 uint16_t g_serverUDPPort = 0;  // Server UDP port.
 SocketRAII g_udpSocket;        // Global UDP socket for file transfers.
 
-<<<<<<< Updated upstream
 
 // Structure to store session details
 struct SessionInfo {
@@ -169,10 +168,8 @@ struct SessionInfo {
 // Global session storage
 std::unordered_map<uint32_t, SessionInfo> g_sessions;
 std::mutex g_sessionMutex;
-=======
 std::mutex sessionMutex;
 std::unordered_map<uint32_t, bool> activeSessions;
->>>>>>> Stashed changes
 
 std::atomic<uint32_t> g_sessionCounter{ 1 }; // Global session ID counter.
 std::mutex g_udpMutex;                        // Mutex to serialize UDP send/receive.
@@ -242,17 +239,17 @@ bool fileExistsAndSize(const std::string& filePath, uint32_t& fileSize)
 void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientAddr, const std::string& filePath,
     uint32_t sessionId, uint32_t fileSize)
 {
-<<<<<<< Updated upstream
+
     uint32_t totalPackets = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
 
     {
         std::lock_guard<std::mutex> lock(g_sessionMutex);
         g_sessions[sessionId] = { sessionId, clientAddr, std::vector<bool>(totalPackets, false), totalPackets };
-=======
+
     {
         std::lock_guard<std::mutex> lock(sessionMutex);
         activeSessions[sessionId] = true;  // ✅ Mark session as active
->>>>>>> Stashed changes
+
     }
 
     std::ifstream file(filePath, std::ios::binary);
@@ -367,17 +364,17 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
                 if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0)
                 {
                     uint32_t seqIndex = ackSeq / CHUNK_SIZE;
-<<<<<<< Updated upstream
+
                     if (seqIndex < session.totalPackets && !session.acked[seqIndex])
                     {
                         session.acked[seqIndex] = true;
                         Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex) +
                             " from client " + std::to_string(sessionId));
-=======
+
                     if (seqIndex < totalPackets && !acked[seqIndex]) {
                         acked[seqIndex] = true;
                         Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex));
->>>>>>> Stashed changes
+
                         gotAck = true;
                     }
                 }
@@ -424,10 +421,9 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
             retransmitCount = 0;
         }
 
-<<<<<<< Updated upstream
+
         //  Fix: Move base_seq forward
-=======
->>>>>>> Stashed changes
+
         while (base_seq < totalPackets && acked[base_seq]) {
             base_seq++;
         }
@@ -805,8 +801,6 @@ int main()
 
     return 0;
 }
-<<<<<<< Updated upstream
+
 #endif
-=======
-#endif
->>>>>>> Stashed changes
+
