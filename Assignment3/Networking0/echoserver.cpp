@@ -46,6 +46,8 @@
 #include <chrono>
 #include <iomanip>
 #include <algorithm> // For std::sort
+
+#include <map>
 // Link with Winsock library.
 #pragma comment(lib, "ws2_32.lib")
 
@@ -63,9 +65,9 @@
 // --------------------- Global Configurable Parameters --------------------------
 // These parameters are now global variables that can be set via a configuration file.
 int CHUNK_SIZE = 32768;     // UDP chunk size (bytes). //Higher means faster download speed
-int ACK_TIMEOUT = 200;    // Timeout in ms for receiving an ACK.
-int MAX_RETRIES = 5;       // Maximum number of retransmissions per window.
-int WINDOW_SIZE = 64;       // Number of packets allowed in the pipeline window.
+int ACK_TIMEOUT = 1000;    // Timeout in ms for receiving an ACK.
+int MAX_RETRIES = 10;       // Maximum number of retransmissions per window.
+int WINDOW_SIZE = 128;       // Number of packets allowed in the pipeline window.
 
 // --------------------- Configuration File Loader -----------------------------
 // Reads key=value pairs from a configuration file ("server_config.txt").
@@ -225,7 +227,8 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
     }
 
     uint32_t totalPackets = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    std::vector<bool> acked(totalPackets, false);
+    std::map<uint32_t, std::vector<bool>> clientAckMap;  // ✅ Track ACKs separately for each client
+    clientAckMap[sessionId] = std::vector<bool>(totalPackets, false);
     uint32_t base_seq = 0;
     int retransmitCount = 0;
 
@@ -235,9 +238,9 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
     while (base_seq < totalPackets && serverRunning)
     {
         uint32_t windowEnd = std::min(base_seq + static_cast<uint32_t>(WINDOW_SIZE), totalPackets);
-        for (uint32_t seq = base_seq; seq < windowEnd; seq++)
+        for (uint32_t seq = base_seq; seq < windowEnd; seq += 2)  // ✅ Alternate packets for fairness
         {
-            if (!acked[seq])
+            if (!clientAckMap[sessionId][seq])
             {
                 uint32_t offset = seq * CHUNK_SIZE;
                 uint32_t remainingBytes = fileSize - offset;
@@ -289,8 +292,9 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
 
                 if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0) {
                     uint32_t seqIndex = ackSeq / CHUNK_SIZE;
-                    if (seqIndex < totalPackets && !acked[seqIndex]) {
-                        acked[seqIndex] = true;
+                    if (seqIndex < totalPackets && !clientAckMap[sessionId][seqIndex]) 
+                    {
+                        clientAckMap[sessionId][seqIndex] = true;
                         Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex));
                         gotAck = true;  // ✅ Fix
                     }
@@ -322,7 +326,8 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
         }
 
         // ✅ Fix: Move base_seq forward
-        while (base_seq < totalPackets && acked[base_seq]) {
+        while (base_seq < totalPackets && clientAckMap[sessionId][base_seq]) 
+        {
             base_seq++;
         }
     }
@@ -484,7 +489,27 @@ void handleClient(ClientInfo client)
                 clientUDPStruct.sin_port = htons(clientUDPPort);
 
                 // Launch selective repeat file transfer in a separate thread.
-                std::thread(sendFileViaUDP_SelectiveRepeat, g_udpSocket.get(), clientUDPStruct, fullPath, sessionId, fileSize).detach();
+                std::thread([=]() 
+                    {
+                    // ✅ Create a dedicated UDP socket for this client
+                    SOCKET clientUdpSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+                    if (clientUdpSock == INVALID_SOCKET) {
+                        Log("ERROR", "Failed to create UDP socket for session " + std::to_string(sessionId));
+                        return;
+                    }
+
+                    // ✅ Increase UDP Buffer for this client
+                    int udpBufSize = 16777216;  // 16MB buffer
+                    setsockopt(clientUdpSock, SOL_SOCKET, SO_SNDBUF, (char*)&udpBufSize, sizeof(udpBufSize));
+                    setsockopt(clientUdpSock, SOL_SOCKET, SO_RCVBUF, (char*)&udpBufSize, sizeof(udpBufSize));
+
+                    Log("INFO", "Started isolated transfer thread for session " + std::to_string(sessionId));
+
+                    // ✅ Call the transfer function with the new socket
+                    sendFileViaUDP_SelectiveRepeat(clientUdpSock, clientUDPStruct, fullPath, sessionId, fileSize);
+
+                    closesocket(clientUdpSock);  // ✅ Close client-specific socket after transfer
+                    }).detach();
             }
             else
             {

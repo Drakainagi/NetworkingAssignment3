@@ -1,4 +1,4 @@
-/* Start Header
+﻿/* Start Header
 *********************************************************************
   \file    ftpclient.cpp
   \authors weijie.soh (Soh Wei Jie)
@@ -171,16 +171,22 @@ void udpReceiverThread(SOCKET udpSocket) {
 
         // Validate fileOffset before sending ACK
         if (fileOffset < fileLength && fileOffset % TCP_RECV_BUFFER_SIZE == 0) {
+            uint32_t seqIndex = fileOffset / TCP_RECV_BUFFER_SIZE;  // ✅ Use sequence index instead of fileOffset
             char ackPacket[5];
-            ackPacket[0] = 0x1; // ACK flag.
-            uint32_t netAck = htonl(fileOffset);
+            ackPacket[0] = 0x1; // ACK flag
+            uint32_t netAck = htonl(seqIndex);
             memcpy(ackPacket + 1, &netAck, 4);
             sendto(udpSocket, ackPacket, 5, 0, reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
 
-            Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset / TCP_RECV_BUFFER_SIZE));
+            Log("DEBUG", "Sent ACK for sequence number " + std::to_string(seqIndex));
         }
-        else {
-            Log("WARN", "Received out-of-range packet: " + std::to_string(fileOffset));
+        else 
+        {
+            if (g_sessions.find(sessionId) == g_sessions.end()) 
+            {
+                Log("WARN", "Invalid session ID: " + std::to_string(sessionId) + ". Ignoring packet.");
+                continue;
+            }
         }
 
 
