@@ -23,8 +23,10 @@
 
 #ifndef WIN32_LEAN_AND_MEAN
 #define WIN32_LEAN_AND_MEAN
+
 #endif
 
+#if 1
 // Enable compilation
 
 #if 1
@@ -46,6 +48,7 @@
 //#include <optional>
 #include <chrono>
 #include <iomanip>
+#include <unordered_map>
 #include <algorithm> // For std::sort
 // Link with Winsock library.
 #pragma comment(lib, "ws2_32.lib")
@@ -65,7 +68,7 @@
 // These parameters are now global variables that can be set via a configuration file.
 int CHUNK_SIZE = 32768;     // UDP chunk size (bytes). //Higher means faster download speed
 int ACK_TIMEOUT = 200;    // Timeout in ms for receiving an ACK.
-int MAX_RETRIES = 5;       // Maximum number of retransmissions per window.
+int MAX_RETRIES = 15;       // Maximum number of retransmissions per window.
 int WINDOW_SIZE = 64;       // Number of packets allowed in the pipeline window.
 
 // --------------------- Configuration File Loader -----------------------------
@@ -151,6 +154,19 @@ std::string g_serverIP;        // Server IP address (as a string).
 uint16_t g_serverUDPPort = 0;  // Server UDP port.
 SocketRAII g_udpSocket;        // Global UDP socket for file transfers.
 
+
+// Structure to store session details
+struct SessionInfo {
+    uint32_t sessionId;
+    sockaddr_in clientAddr; // Stores the client's UDP IP & Port
+    std::vector<bool> acked; // Track received ACKs
+    uint32_t totalPackets;
+};
+
+// Global session storage
+std::unordered_map<uint32_t, SessionInfo> g_sessions;
+std::mutex g_sessionMutex;
+
 std::atomic<uint32_t> g_sessionCounter{ 1 }; // Global session ID counter.
 std::mutex g_udpMutex;                        // Mutex to serialize UDP send/receive.
 
@@ -219,13 +235,20 @@ bool fileExistsAndSize(const std::string& filePath, uint32_t& fileSize)
 void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientAddr, const std::string& filePath,
     uint32_t sessionId, uint32_t fileSize)
 {
+    uint32_t totalPackets = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+
+    {
+        std::lock_guard<std::mutex> lock(g_sessionMutex);
+        g_sessions[sessionId] = { sessionId, clientAddr, std::vector<bool>(totalPackets, false), totalPackets };
+    }
+
     std::ifstream file(filePath, std::ios::binary);
     if (!file.is_open()) {
         Log("ERROR", "Failed to open file for UDP selective repeat transfer: " + filePath);
         return;
     }
 
-    uint32_t totalPackets = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
+    totalPackets = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
     std::vector<bool> acked(totalPackets, false);
     uint32_t base_seq = 0;
     int retransmitCount = 0;
@@ -286,27 +309,67 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
         while (true)
         {
             uint8_t ackBuffer[5] = { 0 };
-            int ackBytes = recvfrom(udpSocket, reinterpret_cast<char*>(ackBuffer), sizeof(ackBuffer), 0, nullptr, nullptr);
+            sockaddr_in senderAddr;
+            int senderAddrLen = sizeof(senderAddr);
+            int ackBytes = recvfrom(udpSocket, reinterpret_cast<char*>(ackBuffer), sizeof(ackBuffer), 0,
+                reinterpret_cast<sockaddr*>(&senderAddr), &senderAddrLen);
+
             if (ackBytes == 5)
             {
+                std::lock_guard<std::mutex> lock(g_sessionMutex);
+
+                // Retrieve session information
+                auto it = g_sessions.find(sessionId);
+                if (it == g_sessions.end()) {
+                    Log("ERROR", "Received ACK for unknown session " + std::to_string(sessionId));
+                    continue;
+                }
+
+                SessionInfo& session = it->second;
+
+                // Ensure buffer size is sufficient for IPv4 (16 bytes)
+                char clientIpStr[INET_ADDRSTRLEN];
+                char senderIpStr[INET_ADDRSTRLEN];
+
+                // Convert client and sender IPs to readable string format
+                inet_ntop(AF_INET, &session.clientAddr.sin_addr, clientIpStr, INET_ADDRSTRLEN);
+                inet_ntop(AF_INET, &senderAddr.sin_addr, senderIpStr, INET_ADDRSTRLEN);
+
+                // Ensure ACK is from the correct client
+                if (senderAddr.sin_addr.s_addr != session.clientAddr.sin_addr.s_addr ||
+                    senderAddr.sin_port != session.clientAddr.sin_port)
+                {
+                    Log("WARN", "Ignoring ACK from wrong client. Expected: " +
+                        std::string(clientIpStr) + ":" + std::to_string(ntohs(session.clientAddr.sin_port)) +
+                        " but got " + std::string(senderIpStr) + ":" + std::to_string(ntohs(senderAddr.sin_port)));
+                    continue;
+                }
+
+
                 uint8_t flag = ackBuffer[0];
                 uint32_t netSeq;
                 memcpy(&netSeq, ackBuffer + 1, 4);
                 uint32_t ackSeq = ntohl(netSeq);
 
-                if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0) {
+                if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0)
+                {
                     uint32_t seqIndex = ackSeq / CHUNK_SIZE;
-                    if (seqIndex < totalPackets && !acked[seqIndex]) {
-                        acked[seqIndex] = true;
-                        Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex));
-                        gotAck = true;  // ✅ Fix
+                    if (seqIndex < session.totalPackets && !session.acked[seqIndex])
+                    {
+                        session.acked[seqIndex] = true;
+                        Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex) +
+                            " from client " + std::to_string(sessionId));
+                        gotAck = true;
                     }
                 }
-                else {
-                    Log("WARN", "Received invalid or duplicate ACK for packet " + std::to_string(ackSeq));
+                else
+                {
+                    Log("WARN", "Received invalid or duplicate ACK for packet " +
+                        std::to_string(ackSeq) + " from client " + std::to_string(sessionId));
                 }
             }
-            else {
+            else
+            {
                 break;
             }
         }
@@ -702,4 +765,8 @@ int main()
 
     return 0;
 }
+<<<<<<< Updated upstream
 #endif
+=======
+#endif
+>>>>>>> Stashed changes

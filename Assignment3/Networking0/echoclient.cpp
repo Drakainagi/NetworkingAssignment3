@@ -49,7 +49,7 @@
 
 // ---------------------- Configuration Constants --------------------------
 constexpr int TCP_RECV_BUFFER_SIZE = 32768; //increased size for CHUNK_SIZE
-constexpr int UDP_BUFFER_SIZE = 50000; //BUFFER SIZE must be more than CHUNK_SIZE
+constexpr int UDP_BUFFER_SIZE = 500000; //BUFFER SIZE must be more than CHUNK_SIZE
 
 // ---------------------- Command ID Definitions --------------------------
 #define CMD_REQ_QUIT         0x1    // /q
@@ -216,6 +216,51 @@ void udpReceiverThread(SOCKET udpSocket) {
         else {
             Log("WARN", "Received out-of-range packet: " + std::to_string(fileOffset));
         }
+<<<<<<< Updated upstream
+=======
+
+
+        uint32_t netDataLength;
+        memcpy(&netDataLength, buffer + 12, 4);
+        uint32_t dataLength = ntohl(netDataLength);
+
+        if (bytesReceived < 16 + dataLength) {
+            Log("WARN", "Incomplete UDP packet for session " + std::to_string(sessionId));
+            continue;
+        }
+        char* fileData = buffer + 16;
+
+        {
+            std::lock_guard<std::mutex> lock(g_fileSessionMutex);
+            auto it = g_sessions.find(sessionId);
+            if (it == g_sessions.end()) {
+                Log("INFO", "No active session for sessionID " + std::to_string(sessionId));
+                continue;
+            }
+
+            FileDownloadSession& session = it->second;
+            session.file.seekp(fileOffset, std::ios::beg);
+            session.file.write(fileData, dataLength);
+            session.receivedBytes += dataLength;
+
+            // ✅ Send ACK only if we successfully wrote to the file
+            if (session.receivedBytes >= session.expectedFileLength) {
+                session.file.close();
+                Log("INFO", "Download complete: " + session.filename +
+                    " (" + std::to_string(session.expectedFileLength) + " bytes)");
+                g_sessions.erase(it);
+            }
+        }
+
+        // ✅ Now send the ACK AFTER writing
+        char ackPacket[5];
+        ackPacket[0] = 0x1; // ACK flag.
+        uint32_t netAck = htonl(fileOffset);
+        memcpy(ackPacket + 1, &netAck, 4);
+        sendto(udpSocket, ackPacket, 5, 0, reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
+        Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset));
+
+>>>>>>> Stashed changes
     }
 }
 
@@ -273,10 +318,11 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
                 recvBuffer.erase(recvBuffer.begin(), recvBuffer.begin() + 7 + listLength);
             }
             else if (command == CMD_RSP_DOWNLOAD) {
-                // Download response: 1 byte command, 4 bytes server IP, 2 bytes server UDP port,
-                // 4 bytes session ID, 4 bytes file length.
+                // Ensure we have the full expected message size
                 if (recvBuffer.size() < 15)
                     break;
+
+                // Extract server IP
                 uint32_t netServerIP;
                 memcpy(&netServerIP, &recvBuffer[1], 4);
                 in_addr serverAddr;
@@ -284,47 +330,63 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
                 char serverIPStr[INET_ADDRSTRLEN] = { 0 };
                 inet_ntop(AF_INET, &serverAddr, serverIPStr, INET_ADDRSTRLEN);
 
+                // Extract UDP port
                 uint16_t netServerUDPPort;
                 memcpy(&netServerUDPPort, &recvBuffer[5], 2);
                 uint16_t serverUDPPort = ntohs(netServerUDPPort);
 
+                // Extract session ID
                 uint32_t netSessionID;
                 memcpy(&netSessionID, &recvBuffer[7], 4);
                 uint32_t sessionID = ntohl(netSessionID);
 
+                // Extract file length
                 uint32_t netFileLength;
                 memcpy(&netFileLength, &recvBuffer[11], 4);
                 uint32_t fileLength = ntohl(netFileLength);
 
-                std::cout << "Download starting from server " << serverIPStr << ":" << serverUDPPort
-                    << ", session: " << sessionID << ", file size: " << fileLength << " bytes" << std::endl;
+                Log("INFO", "Download starting from server " + std::string(serverIPStr) +
+                    ":" + std::to_string(serverUDPPort) +
+                    ", session: " + std::to_string(sessionID) +
+                    ", file size: " + std::to_string(fileLength) + " bytes");
 
-                // Retrieve pending filename.
+                // Retrieve the filename from pending requests
                 std::string filename;
                 {
                     std::lock_guard<std::mutex> lock(g_pendingMutex);
                     filename = g_pendingFilename;
-                    g_pendingFilename = "";
+                    g_pendingFilename.clear();
                 }
-                if (filename.empty())
-                    filename = "downloaded_file";
 
+                if (filename.empty()) {
+                    filename = "downloaded_file"; // Fallback filename
+                }
+
+                // Prepare full path for saving
                 std::string fullPath = g_downloadPath + "\\" + filename;
-                FileDownloadSession session;
-                session.filename = fullPath;
-                session.expectedFileLength = fileLength;
-                session.receivedBytes = 0;
-                session.file.open(fullPath, std::ios::binary | std::ios::out);
-                if (!session.file.is_open()) {
-                    Log("ERROR", "Unable to open file for download: " + fullPath);
-                }
-                else {
-                    Log("INFO", "Saving file to: " + fullPath);
+
+                // Register session before UDP packets arrive
+                {
                     std::lock_guard<std::mutex> lock(g_fileSessionMutex);
-                    g_sessions[sessionID] = std::move(session);
+                    if (g_sessions.find(sessionID) != g_sessions.end()) {
+                        Log("WARN", "Session ID " + std::to_string(sessionID) + " already exists. Overwriting...");
+                    }
+                    g_sessions[sessionID] = FileDownloadSession{ fullPath, std::ofstream(fullPath, std::ios::binary | std::ios::out), fileLength, 0 };
+
+                    // Ensure file opened successfully
+                    if (!g_sessions[sessionID].file.is_open()) {
+                        Log("ERROR", "Failed to open file for writing: " + fullPath);
+                        g_sessions.erase(sessionID);
+                    }
+                    else {
+                        Log("DEBUG", "Registered session " + std::to_string(sessionID) + " for file: " + filename);
+                    }
                 }
+
+                // Remove processed bytes from buffer
                 recvBuffer.erase(recvBuffer.begin(), recvBuffer.begin() + 15);
             }
+
             else if (command == CMD_DOWNLOAD_ERROR) {
                 Log("ERROR", "Download error received from server.");
                 recvBuffer.erase(recvBuffer.begin());
