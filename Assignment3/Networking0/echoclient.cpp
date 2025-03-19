@@ -27,7 +27,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
-#if 1
+#if 0
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -237,7 +237,7 @@ void udpReceiverThread(SOCKET udpSocket)
         memcpy(ackPacket + 1, &netAck, 4);
         sendto(udpSocket, ackPacket, 5, 0,
             reinterpret_cast<sockaddr*>(&senderAddr), senderAddrLen);
-        Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset));
+     //   Log("DEBUG", "Sent ACK for packet " + std::to_string(fileOffset));
 
     }
 }
