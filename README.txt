@@ -1,3 +1,4 @@
+REFER TO SAMPLE ZIP FILE FOR STRUCTURE IN BUILD FOLDER
 # Server Configuration Parameters (SELECTIVE REPEAT)
 
 # CHUNK_SIZE:
@@ -65,7 +66,8 @@ WINDOW_SIZE = 128
 ***********************************************************************************************************************************************************************
 
 ## Additional Notes
-
+- **Building Project:**  
+  Edit the #if close to the top of the respective .cpp files to determine which file to build to generate the repective .exe file.
 - **Unknown Commands:**  
   If you enter a command that is not recognized (anything other than `/q`, `/l`, or `/d`), the client will display a message indicating that the command is unknown along with a reminder of the supported commands.
 - **Command Input:**  
