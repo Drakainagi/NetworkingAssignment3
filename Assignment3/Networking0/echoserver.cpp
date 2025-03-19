@@ -1,11 +1,12 @@
 ﻿/* Start Header
 *****************************************************************/
 /*!
-  \file   ftpserver.cpp
+  \file   echoserver.cpp
   \authors weijie.soh (Soh Wei Jie)
            lee.v (Victor Lee)
+           joshuayuechen.sim (Joshua Sim Yue Chen)
   \par    DigiPen Institute of Technology
-  \date   16 March 2025
+  \date   19 March 2025
   \brief
          This file implements a robust multi-threaded FTP server using Winsock and a thread pool.
          It supports listing available files (/l), file download requests (/d <client_ip:udpPort> <filename>),

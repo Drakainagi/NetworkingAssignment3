@@ -1,10 +1,11 @@
 ﻿/* Start Header
 *********************************************************************
-  \file    ftpclient.cpp
+  \file    echoclient.cpp
   \authors weijie.soh (Soh Wei Jie)
            lee.v (Victor Lee)
-  \par     DigiPen Institute of Technology
-  \date    16 March 2025
+           joshuayuechen.sim (Joshua Sim Yue Chen)
+  \par    DigiPen Institute of Technology
+  \date   19 March 2025
   \brief
          This file implements a multi-threaded FTP client that communicates
          with the server via TCP for control messages and via UDP for file
@@ -17,8 +18,6 @@
 
          Robustness improvements include enhanced error checking, a RAII socket
          wrapper, consistent logging, and modularized code sections.
-
-         THIS FILE IS STILL IN DEVELOPMENT AND MIGHT NOT WORK AS INTENDED
 
   Copyright (C) 2025 DigiPen Institute of Technology.
 /* End Header
