@@ -283,10 +283,13 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
         }
 
         bool gotAck = false;
+        int consecutiveMissedACKs = 0;  // ✅ Track consecutive missing ACKs
+
         while (true)
         {
             uint8_t ackBuffer[5] = { 0 };
             int ackBytes = recvfrom(udpSocket, reinterpret_cast<char*>(ackBuffer), sizeof(ackBuffer), 0, nullptr, nullptr);
+
             if (ackBytes == 5)
             {
                 uint8_t flag = ackBuffer[0];
@@ -294,22 +297,33 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
                 memcpy(&netSeq, ackBuffer + 1, 4);
                 uint32_t ackSeq = ntohl(netSeq);
 
-                if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0) 
+                if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0)
                 {
                     uint32_t seqIndex = ackSeq / CHUNK_SIZE;
-                    if (seqIndex < totalPackets && !clientAckMap[sessionId][seqIndex]) 
+                    if (seqIndex < totalPackets && !clientAckMap[sessionId][seqIndex])
                     {
                         clientAckMap[sessionId][seqIndex] = true;
                         Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex));
-                        gotAck = true;  //Fix
+
+                        // ✅ Reset missed ACK counter since we received one
+                        consecutiveMissedACKs = 0;
+                        gotAck = true;
                     }
                 }
             }
-            else 
+            else
             {
+                consecutiveMissedACKs++;  // ✅ Increase missed ACK count
+
+                if (consecutiveMissedACKs > 10) {  // ✅ Stop sending after 10 missed ACKs
+                    Log("ERROR", "Client not responding. Stopping transfer for session " + std::to_string(sessionId));
+                    return;  // ✅ Exit function and stop sending
+                }
+
                 break;
             }
         }
+
 
         if (!gotAck)
         {
