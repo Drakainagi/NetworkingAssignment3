@@ -82,7 +82,8 @@ private:
 };
 
 // ---------------------- Simple Logger ------------------------------
-void Log(const std::string& level, const std::string& message) {
+void Log(const std::string& level, const std::string& message) 
+{
     auto now = std::chrono::system_clock::now();
     std::time_t now_c = std::chrono::system_clock::to_time_t(now);
     struct tm timeInfo;
@@ -133,27 +134,33 @@ bool parseDestination(const std::string& dest, std::string& ip, uint16_t& port) 
 //   - Data Length [4 bytes]
 //   - File Data [variable length]
 // After writing data to the correct file offset, the client sends a 5-byte ACK.
-void udpReceiverThread(SOCKET udpSocket) {
+void udpReceiverThread(SOCKET udpSocket) 
+{
     char buffer[UDP_BUFFER_SIZE];
     sockaddr_in senderAddr;
     int senderAddrLen = sizeof(senderAddr);
 
-    while (true) {
+    while (true) 
+    {
         int bytesReceived = recvfrom(udpSocket, buffer, sizeof(buffer), 0,
             reinterpret_cast<sockaddr*>(&senderAddr),
             &senderAddrLen);
-        if (bytesReceived <= 0) {
+        if (bytesReceived <= 0) 
+        {
             // If client is shutting down, exit gracefully without warning.
-            if (g_clientShutdown.load()) {
+            if (g_clientShutdown.load()) 
+            {
                 break;
             }
-            else {
+            else 
+            {
                 Log("WARN", "UDP recvfrom() returned error or zero bytes.");
                 continue;
             }
         }
         // Check that packet is at least 16 bytes for header.
-        if (bytesReceived < 16) {
+        if (bytesReceived < 16) 
+        {
             Log("WARN", "Received UDP packet too short.");
             continue;
         }
@@ -170,8 +177,9 @@ void udpReceiverThread(SOCKET udpSocket) {
         uint32_t fileOffset = ntohl(netFileOffset);
 
         // Validate fileOffset before sending ACK
-        if (fileOffset < fileLength && fileOffset % TCP_RECV_BUFFER_SIZE == 0) {
-            uint32_t seqIndex = fileOffset / TCP_RECV_BUFFER_SIZE;  // ✅ Use sequence index instead of fileOffset
+        if (fileOffset < fileLength && fileOffset % TCP_RECV_BUFFER_SIZE == 0) 
+        {
+            uint32_t seqIndex = fileOffset / TCP_RECV_BUFFER_SIZE;  // Use sequence index instead of fileOffset
             char ackPacket[5];
             ackPacket[0] = 0x1; // ACK flag
             uint32_t netAck = htonl(seqIndex);
@@ -194,7 +202,8 @@ void udpReceiverThread(SOCKET udpSocket) {
         memcpy(&netDataLength, buffer + 12, 4);
         uint32_t dataLength = ntohl(netDataLength);
 
-        if (bytesReceived < 16 + dataLength) {
+        if (bytesReceived < 16 + dataLength) 
+        {
             Log("WARN", "Incomplete UDP packet for session " + std::to_string(sessionId));
             continue;
         }
@@ -203,7 +212,8 @@ void udpReceiverThread(SOCKET udpSocket) {
         {
             std::lock_guard<std::mutex> lock(g_fileSessionMutex);
             auto it = g_sessions.find(sessionId);
-            if (it == g_sessions.end()) {
+            if (it == g_sessions.end()) 
+            {
                 Log("INFO", "No active session for sessionID " + std::to_string(sessionId));
                 continue;
             }
@@ -211,7 +221,8 @@ void udpReceiverThread(SOCKET udpSocket) {
             session.file.seekp(fileOffset, std::ios::beg);
             session.file.write(fileData, dataLength);
             session.receivedBytes += dataLength;
-            if (session.receivedBytes >= session.expectedFileLength) {
+            if (session.receivedBytes >= session.expectedFileLength) 
+            {
                 session.file.close();
                 Log("INFO", "Download complete: " + session.filename +
                     " (" + std::to_string(session.expectedFileLength) + " bytes)");
@@ -234,24 +245,30 @@ void udpReceiverThread(SOCKET udpSocket) {
 
 // ---------------------- TCP Receiver Thread ----------------------------
 // This function continuously receives TCP messages from the server and processes them.
-void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
+void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) 
+{
     std::vector<uint8_t> recvBuffer;
     uint8_t tempBuffer[TCP_RECV_BUFFER_SIZE];
 
-    while (true) {
+    while (true) 
+    {
         int bytesReceived = recv(clientSocket, reinterpret_cast<char*>(tempBuffer), sizeof(tempBuffer), 0);
-        if (bytesReceived == 0) {
+        if (bytesReceived == 0) 
+        {
             Log("INFO", "Server closed the connection.");
             break;
         }
-        if (bytesReceived < 0) {
+        if (bytesReceived < 0) 
+        {
             Log("ERROR", "Error receiving data from server.");
             break;
         }
         recvBuffer.insert(recvBuffer.end(), tempBuffer, tempBuffer + bytesReceived);
-        while (!recvBuffer.empty()) {
+        while (!recvBuffer.empty()) 
+        {
             uint8_t command = recvBuffer[0];
-            if (command == CMD_RSP_LISTFILES) {
+            if (command == CMD_RSP_LISTFILES) 
+            {
                 // File list message: 1 byte command, 2 bytes num files, 4 bytes total length,
                 // then pairs of [4 bytes filename length, filename].
                 if (recvBuffer.size() < 7)
@@ -269,7 +286,8 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
 
                 std::cout << "----- Available Files -----" << std::endl;
                 size_t offset = 7;
-                for (int i = 0; i < numFiles; i++) {
+                for (int i = 0; i < numFiles; i++) 
+                {
                     if (offset + 4 > recvBuffer.size())
                         break;
                     uint32_t netFilenameLen;
@@ -285,7 +303,8 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
                 std::cout << "---------------------------" << std::endl;
                 recvBuffer.erase(recvBuffer.begin(), recvBuffer.begin() + 7 + listLength);
             }
-            else if (command == CMD_RSP_DOWNLOAD) {
+            else if (command == CMD_RSP_DOWNLOAD) 
+            {
                 // Download response: 1 byte command, 4 bytes server IP, 2 bytes server UDP port,
                 // 4 bytes session ID, 4 bytes file length.
                 if (recvBuffer.size() < 15)
@@ -328,26 +347,31 @@ void receiveFromServer(SOCKET clientSocket, SOCKET udpSocket) {
                 session.expectedFileLength = fileLength;
                 session.receivedBytes = 0;
                 session.file.open(fullPath, std::ios::binary | std::ios::out);
-                if (!session.file.is_open()) {
+                if (!session.file.is_open()) 
+                {
                     Log("ERROR", "Unable to open file for download: " + fullPath);
                 }
-                else {
+                else 
+                {
                     Log("INFO", "Saving file to: " + fullPath);
                     std::lock_guard<std::mutex> lock(g_fileSessionMutex);
                     g_sessions[sessionID] = std::move(session);
                 }
                 recvBuffer.erase(recvBuffer.begin(), recvBuffer.begin() + 15);
             }
-            else if (command == CMD_DOWNLOAD_ERROR) {
+            else if (command == CMD_DOWNLOAD_ERROR) 
+            {
                 Log("ERROR", "Download error received from server.");
                 recvBuffer.erase(recvBuffer.begin());
             }
-            else if (command == CMD_REQ_QUIT) {
+            else if (command == CMD_REQ_QUIT) 
+            {
                 Log("INFO", "Server requested quit.");
                 recvBuffer.erase(recvBuffer.begin());
                 break;
             }
-            else {
+            else 
+            {
                 // Unknown command; remove one byte.
                 recvBuffer.erase(recvBuffer.begin());
             }
@@ -452,7 +476,8 @@ int main()
     std::getline(std::cin, g_downloadPath);
 
     WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) 
+    {
         std::cerr << "WSAStartup() failed." << std::endl;
         return 1;
     }
@@ -463,21 +488,24 @@ int main()
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_protocol = IPPROTO_TCP;
     int errorCode = getaddrinfo(serverIP.c_str(), serverTCPPort.c_str(), &hints, &info);
-    if (errorCode != 0 || info == nullptr) {
+    if (errorCode != 0 || info == nullptr) 
+    {
         std::cerr << "getaddrinfo() failed." << std::endl;
         WSACleanup();
         return 1;
     }
 
     SOCKET clientSocket = socket(info->ai_family, info->ai_socktype, info->ai_protocol);
-    if (clientSocket == INVALID_SOCKET) {
+    if (clientSocket == INVALID_SOCKET) 
+    {
         std::cerr << "socket() failed." << std::endl;
         freeaddrinfo(info);
         WSACleanup();
         return 1;
     }
     errorCode = connect(clientSocket, info->ai_addr, static_cast<int>(info->ai_addrlen));
-    if (errorCode == SOCKET_ERROR) {
+    if (errorCode == SOCKET_ERROR) 
+    {
         std::cerr << "connect() failed." << std::endl;
         freeaddrinfo(info);
         closesocket(clientSocket);
@@ -487,7 +515,8 @@ int main()
     freeaddrinfo(info);
 
     SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (udpSocket == INVALID_SOCKET) {
+    if (udpSocket == INVALID_SOCKET) 
+    {
         Log("ERROR", "Failed to create UDP socket.");
         return 1;
     }
@@ -497,7 +526,8 @@ int main()
     clientUDPAddr.sin_addr.s_addr = INADDR_ANY;
     clientUDPAddr.sin_port = htons(clientUDPPort);
 
-    if (bind(udpSocket, (sockaddr*)&clientUDPAddr, sizeof(clientUDPAddr)) == SOCKET_ERROR) {
+    if (bind(udpSocket, (sockaddr*)&clientUDPAddr, sizeof(clientUDPAddr)) == SOCKET_ERROR) 
+    {
         Log("ERROR", "Failed to bind UDP socket to port " + std::to_string(clientUDPPort));
         return 1;
     }

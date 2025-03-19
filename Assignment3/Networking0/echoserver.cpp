@@ -25,6 +25,7 @@
 #define WIN32_LEAN_AND_MEAN
 #endif
 
+#if 1
 // Enable compilation
 
 #define NOMINMAX
@@ -221,13 +222,14 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
     uint32_t sessionId, uint32_t fileSize)
 {
     std::ifstream file(filePath, std::ios::binary);
-    if (!file.is_open()) {
+    if (!file.is_open()) 
+    {
         Log("ERROR", "Failed to open file for UDP selective repeat transfer: " + filePath);
         return;
     }
 
     uint32_t totalPackets = (fileSize + CHUNK_SIZE - 1) / CHUNK_SIZE;
-    std::map<uint32_t, std::vector<bool>> clientAckMap;  // ✅ Track ACKs separately for each client
+    std::map<uint32_t, std::vector<bool>> clientAckMap;  // Track ACKs separately for each client
     clientAckMap[sessionId] = std::vector<bool>(totalPackets, false);
     uint32_t base_seq = 0;
     int retransmitCount = 0;
@@ -238,13 +240,13 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
     while (base_seq < totalPackets && serverRunning)
     {
         uint32_t windowEnd = std::min(base_seq + static_cast<uint32_t>(WINDOW_SIZE), totalPackets);
-        for (uint32_t seq = base_seq; seq < windowEnd; seq += 2)  // ✅ Alternate packets for fairness
+        for (uint32_t seq = base_seq; seq < windowEnd; seq += 2)  // Alternate packets for fairness
         {
             if (!clientAckMap[sessionId][seq])
             {
                 uint32_t offset = seq * CHUNK_SIZE;
                 uint32_t remainingBytes = fileSize - offset;
-                uint32_t dataSize = std::min(remainingBytes, static_cast<uint32_t>(CHUNK_SIZE)); // ✅ Fix
+                uint32_t dataSize = std::min(remainingBytes, static_cast<uint32_t>(CHUNK_SIZE));
 
                 file.seekg(offset);
                 std::vector<char> buffer(dataSize, 0);
@@ -268,7 +270,8 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
                     int sentBytes = sendto(udpSocket, reinterpret_cast<const char*>(packet.data()),
                         static_cast<int>(packet.size()), 0,
                         reinterpret_cast<const sockaddr*>(&clientAddr), sizeof(clientAddr));
-                    if (sentBytes == SOCKET_ERROR) {
+                    if (sentBytes == SOCKET_ERROR) 
+                    {
                         Log("ERROR", "sendto() failed for session " + std::to_string(sessionId) +
                             " for packet " + std::to_string(seq));
                     }
@@ -290,20 +293,22 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
                 memcpy(&netSeq, ackBuffer + 1, 4);
                 uint32_t ackSeq = ntohl(netSeq);
 
-                if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0) {
+                if (ackSeq < fileSize && ackSeq % CHUNK_SIZE == 0) 
+                {
                     uint32_t seqIndex = ackSeq / CHUNK_SIZE;
                     if (seqIndex < totalPackets && !clientAckMap[sessionId][seqIndex]) 
                     {
                         clientAckMap[sessionId][seqIndex] = true;
                         Log("DEBUG", "Received valid ACK for packet " + std::to_string(seqIndex));
-                        gotAck = true;  // ✅ Fix
+                        gotAck = true;  //Fix
                     }
                 }
                 else {
                     Log("WARN", "Received invalid or duplicate ACK for packet " + std::to_string(ackSeq));
                 }
             }
-            else {
+            else 
+            {
                 break;
             }
         }
@@ -325,7 +330,7 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
             retransmitCount = 0;
         }
 
-        // ✅ Fix: Move base_seq forward
+        // Fix: Move base_seq forward
         while (base_seq < totalPackets && clientAckMap[sessionId][base_seq]) 
         {
             base_seq++;
@@ -491,24 +496,25 @@ void handleClient(ClientInfo client)
                 // Launch selective repeat file transfer in a separate thread.
                 std::thread([=]() 
                     {
-                    // ✅ Create a dedicated UDP socket for this client
+                    // Create a dedicated UDP socket for this client
                     SOCKET clientUdpSock = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-                    if (clientUdpSock == INVALID_SOCKET) {
+                    if (clientUdpSock == INVALID_SOCKET) 
+                    {
                         Log("ERROR", "Failed to create UDP socket for session " + std::to_string(sessionId));
                         return;
                     }
 
-                    // ✅ Increase UDP Buffer for this client
+                    // Increase UDP Buffer for this client
                     int udpBufSize = 16777216;  // 16MB buffer
                     setsockopt(clientUdpSock, SOL_SOCKET, SO_SNDBUF, (char*)&udpBufSize, sizeof(udpBufSize));
                     setsockopt(clientUdpSock, SOL_SOCKET, SO_RCVBUF, (char*)&udpBufSize, sizeof(udpBufSize));
 
                     Log("INFO", "Started isolated transfer thread for session " + std::to_string(sessionId));
 
-                    // ✅ Call the transfer function with the new socket
+                    // Call the transfer function with the new socket
                     sendFileViaUDP_SelectiveRepeat(clientUdpSock, clientUDPStruct, fullPath, sessionId, fileSize);
 
-                    closesocket(clientUdpSock);  // ✅ Close client-specific socket after transfer
+                    closesocket(clientUdpSock);  // Close client-specific socket after transfer
                     }).detach();
             }
             else
@@ -713,3 +719,4 @@ int main()
 
     return 0;
 }
+#endif
