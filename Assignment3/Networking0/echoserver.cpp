@@ -303,9 +303,6 @@ void sendFileViaUDP_SelectiveRepeat(SOCKET udpSocket, const sockaddr_in& clientA
                         gotAck = true;  //Fix
                     }
                 }
-                else {
-                    Log("WARN", "Received invalid or duplicate ACK for packet " + std::to_string(ackSeq));
-                }
             }
             else 
             {
