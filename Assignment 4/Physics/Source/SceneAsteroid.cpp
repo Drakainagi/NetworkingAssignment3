@@ -290,10 +290,10 @@ void SceneAsteroid::Update(float dt)
 			case WeaponType::NORMAL: // Normal Pellets
 			{
 				auto bullet = spawnProj(GO_BULLET);
-				bullet->scale.Set(0.5f, 0.5f, 0.5f);
+				bullet->scale.Set(15.0f, 15.0f, 15.0f);
 				bullet->vel = m_playerShip->dir * m_playerShip->m_firedbulletspeed + m_playerShip->vel;
 				m_playerShip->bulletCooldown = 10.0f; // Normal fire rate.
-				m_playerShip->vel -= bullet->vel / 1000;
+				m_playerShip->vel -= bullet->vel / 400;
 				break;
 			}
 			case WeaponType::MACHINE_GUN: // Machine Gun
@@ -301,40 +301,42 @@ void SceneAsteroid::Update(float dt)
 				for (int i = 0; i < 2; i++)
 				{
 					auto bullet = spawnProj(GO_BULLET);
-					bullet->scale.Set(0.5f, 0.5f, 0.5f);
+					bullet->scale.Set(15.0f, 15.0f, 15.0f);
 					bullet->vel = m_playerShip->dir * m_playerShip->m_firedbulletspeed + m_playerShip->vel +
 						Math::RandFloatMinMax(-45.0f, 45.0f);
 					m_playerShip->bulletCooldown = 0.001f; // Fast fire rate.
-					m_playerShip->vel -= bullet->vel / 1000;
+					m_playerShip->vel -= bullet->vel / 200;
 				}
 				break;
 			}
 			case WeaponType::SHOTGUN: // ShotGun
 			{
+				Vector3 baseVel = m_playerShip->vel;
 				for (int i = 0; i < 50; i++)
 				{
 					auto bullet = spawnProj(GO_BULLET);
-					bullet->scale.Set(0.5f, 0.5f, 0.5f);
+					bullet->scale.Set(15.0f, 15.0f, 15.0f);
 					float sprayAngle = Math::DegreeToRadian((i - 25) * 1.0f);
 					bullet->vel.Set(
-						m_playerShip->m_firedbulletspeed * cos(m_playerShip->angle + sprayAngle) + m_playerShip->vel.x,
-						m_playerShip->m_firedbulletspeed * sin(m_playerShip->angle + sprayAngle) + m_playerShip->vel.y,
+						m_playerShip->m_firedbulletspeed * cos(m_playerShip->angle + sprayAngle) + baseVel.x,
+						m_playerShip->m_firedbulletspeed * sin(m_playerShip->angle + sprayAngle) + baseVel.y,
 						0);
 					m_playerShip->bulletCooldown = 50.0f;
-					m_playerShip->vel -= bullet->vel / 400;
+					m_playerShip->vel -= bullet->vel / 200;
 				}
 				break;
 			}
 			case WeaponType::PULSE_GUN: // Pulse Gun
 			{
+				Vector3 baseVel = m_playerShip->vel;
 				for (int i = 0; i < 100; i++)
 				{
 					auto pulse = spawnProj(GO_PULSEBULLET);
-					pulse->scale.Set(2.5f, 2.5f, 2.5f);
+					pulse->scale.Set(40.0f, 40.0f, 40.0f);
 					float sprayAngle = Math::DegreeToRadian((i - 50) * 1.0f);
 					pulse->vel.Set(
-						50 * cos(m_playerShip->angle + sprayAngle) + m_playerShip->vel.x,
-						50 * sin(m_playerShip->angle + sprayAngle) + m_playerShip->vel.y,
+						m_playerShip->m_firedbulletspeed * 2 * cos(m_playerShip->angle + sprayAngle) + baseVel.x,
+						m_playerShip->m_firedbulletspeed * 2 * sin(m_playerShip->angle + sprayAngle) + baseVel.y,
 						0);
 					pulse->angle = m_playerShip->angle + sprayAngle;
 					m_playerShip->bulletCooldown = 100.0f;

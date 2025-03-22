@@ -17,7 +17,7 @@ PlayerShip::PlayerShip()
     angularVelocity(0.0f),
     momentOfInertia(1.0f),
     speed(10.0f),
-    m_firedbulletspeed(50)
+    m_firedbulletspeed(600)
 {
     active = true;
     type = GO_SHIP;
