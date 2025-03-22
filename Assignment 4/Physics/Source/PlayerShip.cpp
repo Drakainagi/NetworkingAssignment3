@@ -16,10 +16,11 @@ PlayerShip::PlayerShip()
     bulletCooldown(0),
     angularVelocity(0.0f),
     momentOfInertia(1.0f),
-    speed(1.0f),
+    speed(10.0f),
     m_firedbulletspeed(50)
 {
     active = true;
+    type = GO_SHIP;
     // Initialize facing direction (upwards)
     dir = Vector3(0, 1, 0);
     m_torque.SetZero();
@@ -35,70 +36,77 @@ PlayerShip::~PlayerShip()
 void PlayerShip::update(float dt)
 {
     // --- Movement & Physics Controls ---
+    // Compute applied force based on movement input.
     Vector3 appliedForce(0, 0, 0);
-
-    // Process movement input
     if (Application::IsKeyPressed('W'))
-    {
-        appliedForce = dir * 150.0f;
-    }
+        appliedForce += dir * 150.0f;
     if (Application::IsKeyPressed('S'))
-    {
-        appliedForce = dir * -150.0f;
-    }
+        appliedForce += dir * -150.0f;
+    force = appliedForce;  // Set the force for linear physics
 
-    // Reset torque before applying new input
+    // Process rotational input.
     m_torque.SetZero();
-
     if (Application::IsKeyPressed('A'))
-    {
-        m_torque = Vector3(1, -1, 0).Cross(Vector3(0.0f, 500.0f, 0.0f));
-    }
-    if (Application::IsKeyPressed('D'))
-    {
-        m_torque = Vector3(-1, -1, 0).Cross(Vector3(0.0f, 500.0f, 0.0f));
-    }
+        m_torque = Vector3(1, -1, 0).Cross(Vector3(0.0f, 2000.0f, 0.0f));
+    else if (Application::IsKeyPressed('D'))
+        m_torque = Vector3(-1, -1, 0).Cross(Vector3(0.0f, 2000.0f, 0.0f));
 
-    // Dampen angular velocity over time
+    // Dampen angular velocity.
     angularVelocity *= (1.0f - 0.9f * dt);
     if (fabs(angularVelocity) <= Math::EPSILON)
-    {
         angularVelocity = 0.0f;
-    }
 
-    // Update rotational physics:
+    // Update rotational physics.
     momentOfInertia = mass * scale.x * scale.x;
-    angularVelocity += (m_torque.z / momentOfInertia) * dt;
+    angularVelocity += (m_torque.z / momentOfInertia) * (speed * dt);
     angle += angularVelocity * dt;
     dir = Vector3(cosf(angle), sinf(angle), 0.0f);
     m_torque.SetZero();
 
-    // Update linear physics:
+    // Update linear physics.
     Vector3 acceleration = force * (1.0f / mass);
     vel += acceleration * (speed * dt);
 
-    // Call the base update to handle position updates (if implemented in GameObject::update)
+    // Call base update (e.g., to update position using vel).
     GameObject::update(dt);
 
     // --- Weapon Selection Controls (Keyboard) ---
-    // Example: Use keys '1' through '4' to select different weapons.
-    if (Application::IsKeyPressed('1') && unlockedWeapons.test(static_cast<size_t>(WeaponType::NORMAL)))
-        currentWeapon = WeaponType::NORMAL;
-    if (Application::IsKeyPressed('2') && unlockedWeapons.test(static_cast<size_t>(WeaponType::MACHINE_GUN)))
-        currentWeapon = WeaponType::MACHINE_GUN;
-    if (Application::IsKeyPressed('3') && unlockedWeapons.test(static_cast<size_t>(WeaponType::SHOTGUN)))
-        currentWeapon = WeaponType::SHOTGUN;
-    if (Application::IsKeyPressed('4') && unlockedWeapons.test(static_cast<size_t>(WeaponType::PULSE_GUN)))
-        currentWeapon = WeaponType::PULSE_GUN;
+    // Use an array of key/weapon pairs to reduce redundancy.
+    const std::pair<char, WeaponType> weaponMapping[] = {
+        { '1', WeaponType::NORMAL },
+        { '2', WeaponType::MACHINE_GUN },
+        { '3', WeaponType::SHOTGUN },
+        { '4', WeaponType::PULSE_GUN }
+    };
+    for (const auto& keyWeapon : weaponMapping)
+    {
+        if (Application::IsKeyPressed(keyWeapon.first) &&
+            unlockedWeapons.test(static_cast<size_t>(keyWeapon.second)))
+        {
+            currentWeapon = keyWeapon.second;
+        }
+    }
 
-    // For testing: Press '0' to unlock all weapons.
+    // Unlock all weapons when '0' is pressed.
     if (Application::IsKeyPressed('0'))
     {
         for (size_t i = 0; i < static_cast<size_t>(WeaponType::COUNT); ++i)
             unlockedWeapons.set(i, true);
     }
+    
+    // Wrap-around logic: assume pos is a Vector3 and using Application::GetWindowWidth()/GetWindowHeight()
+    float windowWidth = static_cast<float>(Application::GetWindowWidth());
+    float windowHeight = static_cast<float>(Application::GetWindowHeight());
+    if (pos.x < 0)
+        pos.x += windowWidth;
+    else if (pos.x > windowWidth)
+        pos.x -= windowWidth;
+    if (pos.y < 100)
+        pos.y += windowHeight;
+    else if (pos.y > windowHeight+100)
+        pos.y -= windowHeight;
 
-    // SHOOTING CODE IS IN SCENE DUE TO LIMITATIONS WITH SPAWNING
+    // SHOOTING CODE IS HANDLED IN THE SCENE
 }
 
 void PlayerShip::syncData()

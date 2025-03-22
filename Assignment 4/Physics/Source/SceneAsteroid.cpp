@@ -2,7 +2,20 @@
 #include "GL\glew.h"
 #include "Application.h"
 #include <sstream>
-#define PI 3.14159265
+
+#pragma region Static Variables
+int SceneAsteroid::m_lives = 3;
+int SceneAsteroid::m_score = 0;
+float SceneAsteroid::m_timer = 300.0f;
+bool SceneAsteroid::m_bossSpawned = false;
+bool SceneAsteroid::m_gameStarted = false;
+bool SceneAsteroid::m_gameEnded = false;
+
+float SceneAsteroid::m_enemySpawnRate = 1.0f;
+float SceneAsteroid::m_asteroidSpawnRate = 1.0f;
+float SceneAsteroid::m_celestialBodySpawnRate = 10.0f;
+
+#pragma endregion
 
 #pragma region Initialization
 
@@ -26,16 +39,15 @@ void SceneAsteroid::Init()
 	srand(static_cast<unsigned>(time(nullptr)));
 	Math::InitRNG();
 
-	m_worldHeight = 100.0f;
-	m_worldWidth = m_worldHeight * (static_cast<float>(Application::GetWindowWidth()) / Application::GetWindowHeight());
+	m_worldHeight = Application::GetWindowHeight();
+	m_worldWidth = Application::GetWindowWidth(); 
 
 	// Initialize player ship
 	m_playerShip = std::make_shared<PlayerShip>();
-	m_playerShip->scale = { 5.0f, 5.0f, 5.0f };
-	m_playerShip->pos = { m_worldWidth / 2.0f + 45.0f, m_worldHeight / 2.0f + 5.0f, 0 };
-	m_playerShipStartPos = m_playerShip->pos;
+	m_playerShip->scale = { 40.0f, 40.0f, 40.0f };
+	m_playerShip->pos = { m_worldWidth / 2.0f, m_worldHeight / 2.0f, 0 };
 	m_playerShip->active = true;
-	m_playerShip->mass = 1000000.0f;
+	m_playerShip->mass = 1000000.0f; //Affects getting knocked around
 	m_playerShip->health = 90000.0f;
 
 	// Preallocate pooled objects
@@ -125,60 +137,55 @@ void SceneAsteroid::ProcessInput()
 /****************************************************************************************************************
 Update
 ****************************************************************************************************************/
-void SceneAsteroid::Update(double dt)
+void SceneAsteroid::Update(float dt)
 {
-	/***********************************************************************************************************
-	Title Screen
-	***********************************************************************************************************/
-	if (Application::IsKeyPressed(VK_RETURN) && !m_gameStarted)
+	///////////////////////////////////////////////////////////////////////////////
+	// Game not started
+	if (!m_gameStarted)
 	{
-		m_gameStarted = true;
-		m_playerShip->health = 100.0f;
-		m_playerShip->mass = 5.0f;
-		//m_speed = 1.f;
-		m_enemySpawnRate = 1.f;
-		m_asteroidSpawnRate = 1.f;
-		m_celestialBodySpawnRate = 1.f;
-	}
-	else if (!m_gameStarted)
-	{
-		m_playerShip->vel = { 0, 0, 0 };
-	}
-
-	/************************************************************************************************************
-	GamePlay
-	*************************************************************************************************************/
-	
-		//m_CameraLowestX = m_playerShip->pos.x - m_worldWidth / 2.0f;
-		//m_CameraLowestY = m_playerShip->pos.y - m_worldHeight / 2.0f;
-		//m_CameraHighestX = m_playerShip->pos.x + m_worldWidth / 2.0f;
-		//m_CameraHighestY = m_playerShip->pos.y + m_worldHeight / 2.0f;
-		float RandX, RandY;
-		m_playerShip->bulletCooldown--;
-
-		SceneBase::Update(dt);
-
-		/*if (Application::IsKeyPressed('9'))
+		if (Application::IsKeyPressed(VK_SPACE))
 		{
-			m_speed = Math::Max(0.f, m_speed - 0.1f);
-		}*/
-		//if (Application::IsKeyPressed('0'))
-		//{
-		//	m_speed += 0.1f;
-		//}
-		m_force.SetZero();
-
-		if (m_gameStarted)
-		{
-			m_timer -= static_cast<float>(dt);
+			m_gameStarted = true;
+			m_playerShip->health = 100.0f;
+			m_playerShip->mass = 5.0f;
+			//m_speed = 1.f;
+			m_enemySpawnRate = 1.f;
+			m_asteroidSpawnRate = 1.f;
+			m_celestialBodySpawnRate = 1.f;
 		}
+		m_playerShip->vel = { 0, 0, 0 };
+		return;
+	}
+	
+	///////////////////////////////////////////////////////////////////////////////
+	// Game started
+	SceneBase::Update(dt);
+	m_timer -= dt;
+	// Lose Condition
+    if (m_playerShip->health <= 0.0f || m_timer <= 0.0f)
+	{
+		m_gameEnded = (--m_lives == 0);
+		m_playerShip->health = 100.f;
+		// TODO: Spawn bullets in all directions.
+	}
 
-		/****************************************************************************************************************
-		Spawning OBJ
-		****************************************************************************************************************/
+	///////////////////////////////////////////////////////////////////////////////
+	// Update obj loop
+	for (auto& obj : m_gameObjects)
+	{
+		if (obj && obj->active)
+			obj->update(dt);
+	}
+	m_playerShip->update(dt);
+
+	///////////////////////////////////////////////////////////////////////////////
+	// Spawning OBJ
+	if(0)
+	{
 		m_asteroidSpawnRate -= 0.01f / dt;
 		m_enemySpawnRate -= 0.0003f / dt;
 		m_celestialBodySpawnRate -= 0.00006f / dt;
+		m_playerShip->bulletCooldown--;
 
 		if (m_asteroidSpawnRate <= 0)
 		{
@@ -192,13 +199,13 @@ void SceneAsteroid::Update(double dt)
 				m_enemySpawnRate = 1.f;
 				SpawnEnemy();
 			}
-			else if(m_score<=9000)
+			else if (m_score <= 9000)
 			{
 				m_enemySpawnRate = 99999.f;
 #if 0 // TODO
 				for (std::vector<GameObject*>::iterator it = m_goBossShips.begin(); it != m_goBossShips.end(); ++it)
 				{
-					GameObject* OBJ = (GameObject*)* it;
+					GameObject* OBJ = (GameObject*)*it;
 					if (!OBJ->active)
 					{
 						GameObject* enemy = FetchGO(m_goBossShips);
@@ -239,7 +246,7 @@ void SceneAsteroid::Update(double dt)
 							enemy->health = 0.0f;
 							enemy->angle = 0.0f;
 							enemy->scale.Set(7.5f, 7.5f, 0.0f);
-							enemy->target = (GameObject*) * --it;
+							enemy->target = (GameObject*)*--it;
 							enemy->mass = 7.5;
 							it++;
 						}
@@ -345,14 +352,14 @@ void SceneAsteroid::Update(double dt)
 			Game Physics
 			****************************************************************************************************************/
 			m_playerShip->momentOfInertia = m_playerShip->mass * m_playerShip->scale.x * m_playerShip->scale.x;
-			m_playerShip->angularVelocity += (m_playerShip->m_torque.z / m_playerShip->momentOfInertia) * static_cast<float>(dt);
+			m_playerShip->angularVelocity += (m_playerShip->m_torque.z / m_playerShip->momentOfInertia) * dt;
 			m_playerShip->angle += static_cast<float>(m_playerShip->angularVelocity * dt);
 			m_playerShip->dir = Vector3(cosf(m_playerShip->angle), sinf(m_playerShip->angle), 0.0f);
 			m_playerShip->m_torque.SetZero();
 
 			Vector3 acceleration = m_force * (1 / m_playerShip->mass);
-			m_playerShip->vel += acceleration * (m_speed * static_cast<float>(dt));
-			//m_playerShip->pos += m_playerShip->vel*(m_speed * static_cast<float>(dt));
+			m_playerShip->vel += acceleration * (m_speed * dt);
+			//m_playerShip->pos += m_playerShip->vel*(m_speed * dt);
 #endif
 		}
 #if 0 //TODO move AI over to individual classes
@@ -361,10 +368,10 @@ void SceneAsteroid::Update(double dt)
 		***********************************************************************************************************************************/
 		for (std::vector<GameObject*>::iterator it = m_goAsteroid.begin(); it != m_goAsteroid.end(); ++it)
 		{
-			GameObject* OBJ = (GameObject*)* it;
+			GameObject* OBJ = (GameObject*)*it;
 			if (OBJ->active)
 			{
-				OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+				OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 				OBJ->angle += static_cast<float>(OBJ->angularVelocity * dt);
 				if (sqrt(pow(OBJ->pos.x - m_playerShip->pos.x, 2) + pow(OBJ->pos.y - m_playerShip->pos.y, 2)) > 200.0f)
 				{
@@ -381,11 +388,11 @@ void SceneAsteroid::Update(double dt)
 					OBJ->scale.y = (OBJ->scale.y / 100) * (100 - scaleReduc);
 					if (OBJ->health <= 0.0f)
 						OBJ->active = false;
-					m_playerShip->health -= 5.0f * (OBJ->scale.x/ OBJ->OriginalScale);
+					m_playerShip->health -= 5.0f * (OBJ->scale.x / OBJ->OriginalScale);
 				}
 				for (std::vector<GameObject*>::iterator it2 = m_goShip.begin(); it2 != m_goShip.end(); ++it2)
 				{
-					GameObject* OBJ2 = (GameObject*)* it2;
+					GameObject* OBJ2 = (GameObject*)*it2;
 					if (OBJ2->active)
 					{
 						//Handle collision between GO_ENEMY and GO_ASTEROID
@@ -416,10 +423,10 @@ void SceneAsteroid::Update(double dt)
 		***********************************************************************************************************************************/
 		for (std::vector<GameObject*>::iterator it = m_goCelestialBodies.begin(); it != m_goCelestialBodies.end(); ++it)
 		{
-			GameObject* OBJ = (GameObject*)* it;
+			GameObject* OBJ = (GameObject*)*it;
 			if (OBJ->active)
 			{
-				OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+				OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 				if (sqrt(pow(OBJ->pos.x - m_playerShip->pos.x, 2) + pow(OBJ->pos.y - m_playerShip->pos.y, 2)) > 200.0f)
 				{
 					OBJ->active = false;
@@ -558,12 +565,12 @@ void SceneAsteroid::Update(double dt)
 		***********************************************************************************************************************************/
 		for (std::vector<GameObject*>::iterator it = m_goShip.begin(); it != m_goShip.end(); ++it)
 		{
-			GameObject* OBJ = (GameObject*)* it;
+			GameObject* OBJ = (GameObject*)*it;
 			if (OBJ->active)
 			{
 				if (OBJ->type == GAMEOBJECT_TYPE::GO_ENEMYSHIP)
 				{
-					OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+					OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 					//Enemy AI
 					OBJ->bulletCooldown -= 1.f * dt;
 					OBJ->dir = (m_playerShip->pos - OBJ->pos).Normalized();
@@ -607,7 +614,7 @@ void SceneAsteroid::Update(double dt)
 					{
 						OBJ->target = FetchNearestOBJ(OBJ->pos);
 					}
-					OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+					OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 					//Enemy AI
 					OBJ->bulletCooldown -= 1.f * dt;
 					OBJ->angle = atan2(OBJ->dir.y, OBJ->dir.x);
@@ -652,7 +659,7 @@ void SceneAsteroid::Update(double dt)
 		***********************************************************************************************************************************/
 		for (std::vector<GameObject*>::iterator it = m_goBossShips.begin(); it != m_goBossShips.end(); ++it)
 		{
-			GameObject* OBJ = (GameObject*)* it;
+			GameObject* OBJ = (GameObject*)*it;
 			if (OBJ->active)
 			{
 				static bool PhaseShift = false;
@@ -663,7 +670,7 @@ void SceneAsteroid::Update(double dt)
 						//Enemy AI
 						OBJ->vel += Vector3{ (m_playerShip->pos.x - OBJ->pos.x) / 50, (m_playerShip->pos.y - OBJ->pos.y) / 50, 0.0f };
 						Vector3 OldPos = OBJ->pos;
-						OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+						OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 						OBJ->dir = ((OBJ->pos - OldPos).Normalized());
 						OBJ->angle = atan2(OBJ->dir.y, OBJ->dir.x);
 					}
@@ -671,7 +678,7 @@ void SceneAsteroid::Update(double dt)
 					{
 						//Enemy AI
 						OBJ->vel += Vector3{ (m_playerShip->pos.x - OBJ->pos.x) / 80, (m_playerShip->pos.y - OBJ->pos.y) / 80, 0.0f };
-						OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+						OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 						OBJ->bulletCooldown -= 1.f * dt;
 						OBJ->dir = (m_playerShip->pos - OBJ->pos).Normalized();
 						OBJ->angle = atan2(OBJ->dir.y, OBJ->dir.x);
@@ -733,7 +740,7 @@ void SceneAsteroid::Update(double dt)
 					if (PhaseShift)
 					{
 						OBJ->vel += Vector3{ (m_playerShip->pos.x - OBJ->pos.x) / 30, (m_playerShip->pos.y - OBJ->pos.y) / 30, 0.0f };
-						OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+						OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 						OBJ->bulletCooldown -= 1.f * dt;
 						OBJ->dir = (m_playerShip->pos - OBJ->pos).Normalized();
 						OBJ->angle = atan2(OBJ->dir.y, OBJ->dir.x);
@@ -749,7 +756,7 @@ void SceneAsteroid::Update(double dt)
 							OBJ->dir = (OBJ->target->pos - OBJ->pos).Normalized();
 							OBJ->vel += Vector3{ (OBJ->target->pos.x - OBJ->pos.x) * 7, (OBJ->target->pos.y - OBJ->pos.y) * 7, 0.0f };
 						}
-						OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+						OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 						//Enemy AI
 						OBJ->bulletCooldown -= 1.f * dt;
 						OBJ->dir = (OBJ->target->pos - OBJ->pos).Normalized();
@@ -799,7 +806,7 @@ void SceneAsteroid::Update(double dt)
 		***********************************************************************************************************************************/
 		for (std::vector<GameObject*>::iterator it = m_goBullet.begin(); it != m_goBullet.end(); ++it)
 		{
-			GameObject* OBJ = (GameObject*)* it;
+			GameObject* OBJ = (GameObject*)*it;
 			if (OBJ->active)
 			{
 				//Collision check between GO_BULLET and GO_ASTEROID
@@ -825,7 +832,7 @@ void SceneAsteroid::Update(double dt)
 				//Handle collision between GO_BULLET and m_playerShip using simple distance-based check
 				if (OBJ->type == GAMEOBJECT_TYPE::GO_ENEMYSHIP_BULLET)
 				{
-					OBJ->pos += OBJ->vel * m_speed * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+					OBJ->pos += OBJ->vel * m_speed * dt - m_playerShip->vel * (m_speed * dt);
 					float combinedRadii = OBJ->scale.x + m_playerShip->scale.x;
 					if ((OBJ->pos - m_playerShip->pos).LengthSquared() < combinedRadii)
 					{
@@ -836,7 +843,7 @@ void SceneAsteroid::Update(double dt)
 				//Handle collision between GO_BULLET and enemy ships using simple distance-based check
 				else if (OBJ->type == GAMEOBJECT_TYPE::GO_BULLET)
 				{
-					OBJ->pos += OBJ->vel * m_speed * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+					OBJ->pos += OBJ->vel * m_speed * dt - m_playerShip->vel * (m_speed * dt);
 					for (int i = 0; i < m_goShip.size(); ++i)
 					{
 						GameObject* OBJ2 = m_goShip[i];
@@ -890,7 +897,7 @@ void SceneAsteroid::Update(double dt)
 				}
 				else if (OBJ->type == GAMEOBJECT_TYPE::GO_PULSEBULLET)
 				{
-					OBJ->pos += OBJ->vel * m_speed * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+					OBJ->pos += OBJ->vel * m_speed * dt - m_playerShip->vel * (m_speed * dt);
 					for (int i = 0; i < m_goShip.size(); ++i)
 					{
 						GameObject* OBJ2 = m_goShip[i];
@@ -949,7 +956,7 @@ void SceneAsteroid::Update(double dt)
 						OBJ->target = FetchNearestOBJ(OBJ->pos);
 					}
 					OBJ->health -= 0.01f * dt;
-					OBJ->pos += OBJ->vel * static_cast<float>(dt) - m_playerShip->vel * (m_speed * static_cast<float>(dt));
+					OBJ->pos += OBJ->vel * dt - m_playerShip->vel * (m_speed * dt);
 					if (OBJ->health <= 0.0f)
 					{
 						OBJ = false;
@@ -1037,21 +1044,8 @@ void SceneAsteroid::Update(double dt)
 			}
 		}
 #endif
-		/******************************************************************************************************
-		Lives
-		******************************************************************************************************/
-		if (m_playerShip->health <= 0.0f || m_timer <= 0.0f)
-		{
-			--m_lives;
+	}
 
-			if(m_lives == 0)
-				m_gameEnded = true;
-			
-			m_playerShip->health = 100.0f;
-
-			//Spawn Bullets in all directions
-		}
-	
 }
 
 #pragma region TODO: Server Side
@@ -1171,7 +1165,7 @@ void SceneAsteroid::RenderGO(GameObject *go)
 		modelStack.PushMatrix();
 		modelStack.Translate(go->pos.x, go->pos.y, go->pos.z);
 		modelStack.Scale(go->scale.x, go->scale.y, go->scale.z);
-		RenderMesh(meshList[GEO_PLANET1], false);
+		RenderMesh(meshList[GEO_PLANET], false);
 		modelStack.PopMatrix();
 		break;
 	case GAMEOBJECT_TYPE::GO_BLACKHOLE:
@@ -1188,10 +1182,6 @@ void SceneAsteroid::Render()
 {
 	glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 	
-	//Calculating aspect ratio
-	m_worldHeight = 100.f;
-	m_worldWidth = m_worldHeight * (float)Application::GetWindowWidth() / Application::GetWindowHeight();
-
 	// Projection matrix : Orthographic Projection
 	Mtx44 projection;
 	projection.SetToOrtho(0, m_worldWidth, 0, m_worldHeight, -10, 10);
@@ -1217,7 +1207,7 @@ void SceneAsteroid::Render()
 			RenderGO(obj.get());
 		}
 	}
-	
+
 	//On screen text
 	if (m_gameStarted && !m_gameEnded)
 	{
@@ -1328,7 +1318,7 @@ void SceneAsteroid::Render()
 		RenderMesh(meshList[GEO_MENU], false);
 		modelStack.PopMatrix();
 	}
-	if (m_gameStarted)
+	if (m_gameEnded)
 	{
 		modelStack.PushMatrix();
 		modelStack.Translate(m_worldWidth / 2, m_worldHeight / 2, 0.0f);

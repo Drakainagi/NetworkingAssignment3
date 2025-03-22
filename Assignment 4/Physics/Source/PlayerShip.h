@@ -5,7 +5,7 @@
 #include <bitset>
 
 // Define weapon types. The ordering should match your intended mapping:
-// 0: Normal Pellets, 1: Machine Gun, 2: Shotgun, 3: Homing Rockets, 4: Pulse Gun.
+// 0: Normal Pellets, 1: Machine Gun, 2: Shotgun, 3: Pulse Gun.
 enum class WeaponType {
     NORMAL = 0,
     MACHINE_GUN,

@@ -71,10 +71,7 @@ public:
         GEO_PULSEBULLET,
         GEO_MISSILE,
         GEO_CUBE,
-        GEO_PLANET1,
-        GEO_PLANET2,
-        GEO_PLANET3,
-        GEO_PLANET4,
+        GEO_PLANET,
         GEO_BLACKHOLE,
         GEO_HEALTHGREEN,
         GEO_HEALTHYELLOW,
@@ -108,7 +105,7 @@ public:
      *
      * @param dt Delta time (in seconds) since the last frame.
      */
-    virtual void Update(double dt);
+    virtual void Update(float dt);
 
     /**
      * @brief Renders the scene.

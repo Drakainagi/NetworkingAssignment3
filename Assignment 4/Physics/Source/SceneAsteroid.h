@@ -9,6 +9,7 @@
 #include "CelestialBodies.h"
 #include <vector>
 #include <memory>
+#include "MyMath.h"
 
 class SceneAsteroid : public SceneBase
 {
@@ -18,7 +19,7 @@ public:
 
     // Core scene functions
     virtual void Init() override;  // Initialize scene objects
-    virtual void Update(double dt) override;  // Update all game objects
+    virtual void Update(float dt) override;  // Update all game objects
     virtual void Render() override;  // Render all game objects
     virtual void Exit() override;  // Cleanup memory and reset state
 
@@ -44,25 +45,23 @@ private:
 
     // Player management
     std::shared_ptr<PlayerShip> m_playerShip; //THIS WILL BE YOU
-    Vector3 m_force;
-    Vector3 m_playerShipStartPos;
 
     // World properties
-    float m_worldWidth;
-    float m_worldHeight;
+    float m_worldWidth = 0;
+    float m_worldHeight = 0;
 
     // Game state tracking
-    int m_lives;
-    int m_score;
-    float m_timer;
-    bool m_bossSpawned;
-    bool m_gameStarted;
-    bool m_gameEnded;
+    static int m_lives;
+    static int m_score;
+    static float m_timer;
+    static bool m_bossSpawned;
+    static bool m_gameStarted;
+    static bool m_gameEnded;
 
     // Spawn rates for various entities
-    float m_enemySpawnRate;
-    float m_asteroidSpawnRate;
-    float m_celestialBodySpawnRate;
+    static float m_enemySpawnRate;
+    static float m_asteroidSpawnRate;
+    static float m_celestialBodySpawnRate;
 
     // Object spawning functions
     void SpawnEnemy();

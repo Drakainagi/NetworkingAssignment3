@@ -103,14 +103,8 @@ void SceneBase::Init()
     meshList[GEO_CUBE] = MeshBuilder::GenerateCube("cube", Color(1, 1, 1), 2.f);
     meshList[GEO_BLACKHOLE] = MeshBuilder::GenerateQuad("BlackHole", Color(1, 1, 1), 1);
     meshList[GEO_BLACKHOLE]->textureID = LoadTGA("Image//BlackHole.tga");
-    meshList[GEO_PLANET1] = MeshBuilder::GenerateQuad("Planet1", Color(1, 1, 1), 1);
-    meshList[GEO_PLANET1]->textureID = LoadTGA("Image//Planet1.tga");
-    meshList[GEO_PLANET2] = MeshBuilder::GenerateQuad("Planet2", Color(1, 1, 1), 1);
-    meshList[GEO_PLANET2]->textureID = LoadTGA("Image//Planet2.tga");
-    meshList[GEO_PLANET3] = MeshBuilder::GenerateQuad("Planet3", Color(1, 1, 1), 1);
-    meshList[GEO_PLANET3]->textureID = LoadTGA("Image//Planet3.tga");
-    meshList[GEO_PLANET4] = MeshBuilder::GenerateQuad("Planet4", Color(1, 1, 1), 1);
-    meshList[GEO_PLANET4]->textureID = LoadTGA("Image//Planet4.tga");
+    meshList[GEO_PLANET] = MeshBuilder::GenerateQuad("Planet1", Color(1, 1, 1), 1);
+    meshList[GEO_PLANET]->textureID = LoadTGA("Image//Planet1.tga");
     meshList[GEO_MENU] = MeshBuilder::GenerateQuad("Menu", Color(1, 1, 1), 1);
     meshList[GEO_MENU]->textureID = LoadTGA("Image//StartScreen.tga");
     meshList[GEO_GAMESCRN] = MeshBuilder::GenerateQuad("GameScrn", Color(1, 1, 1), 1);
@@ -133,13 +127,13 @@ void SceneBase::Init()
  * @brief Updates scene logic and toggles rendering options.
  * @param dt Delta time (in seconds).
  */
-void SceneBase::Update(double dt)
+void SceneBase::Update(float dt)
 {
     if (Application::IsKeyPressed('5')) glEnable(GL_CULL_FACE);
     if (Application::IsKeyPressed('6')) glDisable(GL_CULL_FACE);
     if (Application::IsKeyPressed('7')) glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
     if (Application::IsKeyPressed('8')) glPolygonMode(GL_FRONT_AND_BACK, GL_LINE);
-    fps = 1.f / static_cast<float>(dt);
+    fps = 1.f / dt;
 }
 
 /**
