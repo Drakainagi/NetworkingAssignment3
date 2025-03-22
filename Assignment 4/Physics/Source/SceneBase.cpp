@@ -88,16 +88,12 @@ void SceneBase::Init()
     for (int i = 0; i < NUM_GEOMETRY; ++i) { meshList[i] = NULL; }
     meshList[GEO_SHIP] = MeshBuilder::GenerateQuad("ship", Color(1, 1, 1), 1);
     meshList[GEO_SHIP]->textureID = LoadTGA("Image//PlayerShipBlue.tga");
-    meshList[GEO_GUARDIAN] = MeshBuilder::GenerateQuad("Guardian", Color(1, 1, 1), 1);
-    meshList[GEO_GUARDIAN]->textureID = LoadTGA("Image//Guardian.tga");
     meshList[GEO_ENEMY] = MeshBuilder::GenerateQuad("Enemy", Color(1, 1, 1), 1);
     meshList[GEO_ENEMY]->textureID = LoadTGA("Image//Enemy.tga");
     meshList[GEO_BOSS] = MeshBuilder::GenerateQuad("Boss", Color(1, 1, 1), 1);
     meshList[GEO_BOSS]->textureID = LoadTGA("Image//BOSS.tga");
     meshList[GEO_Asteroid] = MeshBuilder::GenerateQuad("Asteroid", Color(1, 1, 1), 1);
     meshList[GEO_Asteroid]->textureID = LoadTGA("Image//Asteroid.tga");
-    meshList[GEO_POWERUP] = MeshBuilder::GenerateQuad("Powerup", Color(1, 1, 1), 1);
-    meshList[GEO_POWERUP]->textureID = LoadTGA("Image//PowerUp.tga");
     meshList[GEO_AXES] = MeshBuilder::GenerateAxes("reference", 1000, 1000, 1000);
     meshList[GEO_BALL] = MeshBuilder::GenerateSphere("ball", Color(1, 1, 0), 10, 10, 1.f);
     meshList[GEO_ENEMYBALL] = MeshBuilder::GenerateSphere("ball", Color(1, 0, 1), 10, 10, 1.f);
@@ -105,16 +101,6 @@ void SceneBase::Init()
     meshList[GEO_MISSILE] = MeshBuilder::GenerateQuad("Missile", Color(1, 1, 1), 1);
     meshList[GEO_MISSILE]->textureID = LoadTGA("Image//Missile.tga");
     meshList[GEO_CUBE] = MeshBuilder::GenerateCube("cube", Color(1, 1, 1), 2.f);
-    meshList[GEO_BACKGROUND1] = MeshBuilder::GenerateQuad("BackGround", Color(1, 1, 1), 1);
-    meshList[GEO_BACKGROUND1]->textureID = LoadTGA("Image//BackGround1.tga");
-    meshList[GEO_BACKGROUND2] = MeshBuilder::GenerateQuad("BackGround", Color(1, 1, 1), 1);
-    meshList[GEO_BACKGROUND2]->textureID = LoadTGA("Image//BackGround2.tga");
-    meshList[GEO_BACKGROUND3] = MeshBuilder::GenerateQuad("BackGround", Color(1, 1, 1), 1);
-    meshList[GEO_BACKGROUND3]->textureID = LoadTGA("Image//BackGround3.tga");
-    meshList[GEO_PARALLAXLAYER2] = MeshBuilder::GenerateQuad("ParallaxLayer", Color(1, 1, 1), 1);
-    meshList[GEO_PARALLAXLAYER2]->textureID = LoadTGA("Image//ParallaxLayer2.tga");
-    meshList[GEO_PARALLAXLAYER3] = MeshBuilder::GenerateQuad("ParallaxLayer", Color(1, 1, 1), 1);
-    meshList[GEO_PARALLAXLAYER3]->textureID = LoadTGA("Image//ParallaxLayer3.tga");
     meshList[GEO_BLACKHOLE] = MeshBuilder::GenerateQuad("BlackHole", Color(1, 1, 1), 1);
     meshList[GEO_BLACKHOLE]->textureID = LoadTGA("Image//BlackHole.tga");
     meshList[GEO_PLANET1] = MeshBuilder::GenerateQuad("Planet1", Color(1, 1, 1), 1);

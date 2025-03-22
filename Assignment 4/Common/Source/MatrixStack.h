@@ -19,7 +19,8 @@ Matrix Stack to replace openGL math function
 \brief	Matrix Stack class
 */
 /******************************************************************************/
-class MS {
+class MS 
+{
 	std::stack<Mtx44> ms;
 public:
 	MS();

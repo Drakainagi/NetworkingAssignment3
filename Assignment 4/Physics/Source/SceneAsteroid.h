@@ -1,74 +1,74 @@
 #ifndef SCENE_ASTEROID_H
 #define SCENE_ASTEROID_H
 
-#include "GameObject.h"
-#include <vector>
 #include "SceneBase.h"
-#include <cmath>
+#include "GameObject.h"
+#include "PlayerShip.h"
+#include "Enemy.h"
+#include "Bullet.h"
+#include "CelestialBodies.h"
+#include <vector>
+#include <memory>
 
 class SceneAsteroid : public SceneBase
 {
-	static const int MAX_SPEED = 1000; // 100
-	static const int BULLET_SPEED = 150; // 50
-	static const int MISSILE_SPEED = 60; // 20
-	static const int MISSILE_POWER = 2; // 1
-
-	std::vector<GameObject*> m_goAsteroid;
-	std::vector<GameObject*> m_goBullet;
-	std::vector<GameObject*> m_goShip;
-	std::vector<GameObject*> m_goPowerUp;
-	std::vector<GameObject*> m_goCelestialBodies;
-	std::vector<GameObject*> m_goBossShips;
-
-	float m_worldWidth;
-	float m_worldHeight;
-	float m_CameraLowestX;
-	float m_CameraLowestY;
-	float m_CameraHighestX;
-	float m_CameraHighestY;
-	int WorldBackGroundNumber;
-	Vector3 BackgroundPos;
-	Vector3 ParallaxLayer1;
-	Vector3 ParallaxLayer2;
-	Vector3 ParallaxLayer3;
-
-	GameObject* m_ship;
-	Vector3 m_force;
-	Vector3 m_ShipStartPos;
-	float m_speed;
-	int m_objectCount;
-	int m_lives;
-	int m_score;
-	int m_index;
-	float m_timer;
-	int m_WeaponChoice;
-	bool m_WeaponUnlock1;
-	bool m_WeaponUnlock2;
-	bool m_WeaponUnlock3;
-	bool m_WeaponUnlock4;
-
-	float EnemySpawnRate;
-	float AsteroidSpawnRate;
-	float PowerUpSpawnRate;
-	float CelestialBodySpawnRate;
-
-	bool BossSpawned;
-
-	bool StartGame;
-	bool EndGame;
 public:
-	SceneAsteroid();
-	~SceneAsteroid();
+    SceneAsteroid();
+    ~SceneAsteroid();
 
-	virtual void Init();
-	virtual void Update(double dt);
-	virtual void Render();
-	virtual void Exit();
+    // Core scene functions
+    virtual void Init() override;  // Initialize scene objects
+    virtual void Update(double dt) override;  // Update all game objects
+    virtual void Render() override;  // Render all game objects
+    virtual void Exit() override;  // Cleanup memory and reset state
 
-	void RenderGO(GameObject *go);
+    // Rendering function
+    void RenderGO(GameObject* go);
 
-	GameObject* FetchGO(std::vector<GameObject*> m_goList);
-	GameObject* FetchNearestOBJ(const Vector3& position);
+    // Fetch an available GameObject from the pool
+    std::shared_ptr<GameObject> FetchGO();
+
+    // Get the nearest object to a given position
+    std::shared_ptr<GameObject> FetchNearestOBJ(const Vector3& position);
+
+    // Process controls input for scene
+    void ProcessInput();
+
+    // Multiplayer synchronization functions
+    void SyncStateToClients();  //TODO: Sync game state to connected clients -> IF THIS IS ACTING AS SERVER TODO
+    void SyncStateFromServer();  //TODO: Receive and apply updates from the server -> IF THIS IS ACTING AS CLIENT
+
+private:
+    // Object pooling: single vector for efficient memory reuse
+    std::vector<std::shared_ptr<GameObject>> m_gameObjects;
+
+    // Player management
+    std::shared_ptr<PlayerShip> m_playerShip; //THIS WILL BE YOU
+    Vector3 m_force;
+    Vector3 m_playerShipStartPos;
+
+    // World properties
+    float m_worldWidth;
+    float m_worldHeight;
+
+    // Game state tracking
+    int m_lives;
+    int m_score;
+    float m_timer;
+    bool m_bossSpawned;
+    bool m_gameStarted;
+    bool m_gameEnded;
+
+    // Spawn rates for various entities
+    float m_enemySpawnRate;
+    float m_asteroidSpawnRate;
+    float m_celestialBodySpawnRate;
+
+    // Object spawning functions
+    void SpawnEnemy();
+    void SpawnAsteroid();
+    void SpawnCelestialBody();
+    //void SpawnBoss();
 };
 
-#endif
+#endif // SCENE_ASTEROID_H
