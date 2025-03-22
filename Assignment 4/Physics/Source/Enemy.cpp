@@ -15,7 +15,8 @@ Enemy::~Enemy()
 void Enemy::update(float dt) {
     // Insert enemy AI logic here, such as movement, target tracking, or state changes.
     GameObject::update(dt);
-    // Additional enemy-specific update code can go here.
+
+    // TODO: AI Logic update to only be handled by server
 }
 
 void Enemy::syncData() {

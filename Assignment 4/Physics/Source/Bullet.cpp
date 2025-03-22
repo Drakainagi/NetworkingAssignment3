@@ -1,5 +1,5 @@
 #include "Bullet.h"
-
+#include "Application.h"
 Bullet::Bullet()
     : GameObject(),
     enemyBullet(false),
@@ -18,6 +18,15 @@ void Bullet::update(float dt) {
     // Move the bullet by its speed along the velocity direction.
     vel = vel * speed;
     GameObject::update(dt);
+
+    // Deactivate if too far. - Can delete on own computer naturally
+    if ((pos - Vector3(Application::GetWindowWidth() / 2, Application::GetWindowHeight() / 2, 0)).Length() > 200.0f)
+    {
+        active = false;
+        return;
+    }
+
+    // TODO Collision: Collide with either other player/asteroid/enemy
 }
 
 void Bullet::syncData() {

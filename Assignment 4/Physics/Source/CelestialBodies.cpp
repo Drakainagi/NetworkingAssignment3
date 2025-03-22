@@ -1,5 +1,6 @@
 #include "CelestialBodies.h"
 #include "PlayerShip.h"
+#include "Application.h"
 
 CelestialBodies::CelestialBodies()
     : GameObject(),
@@ -20,20 +21,20 @@ void CelestialBodies::update(float dt)
     GameObject::update(dt);
     // Additional celestial-specific behavior can be added here.
     
+    // TODO SERVER CONTROL
     // Deactivate if too far.
-    //if ((pos - playerPos).Length() > 200.0f)
-    //{
-    //    active = false;
-    //    return;
-    //}
+    if ((pos - Vector3(Application::GetWindowWidth()/2, Application::GetWindowHeight() / 2, 0)).Length() > 200.0f)
+    {
+        active = false;
+        return;
+    }
 
-    //// Apply gravitational pull on the player.
+    // TODO Collision: Apply gravitational pull on the obj list. 
     //float combinedRadii = scale.x + player->scale.x + 10.0f;
-    //if ((pos - player->pos).LengthSquared() > combinedRadii * combinedRadii)
+    //if ((pos - entitiy->pos).LengthSquared() > combinedRadii * combinedRadii)
     //{
-    //    player->vel += (pos - player->pos).Normalized() * (mass / (pos - player->pos).LengthSquared());
+    //    entitiy->vel += (pos - player->pos).Normalized() * (mass / (pos - player->pos).LengthSquared());
     //}
-
 }
 
 void CelestialBodies::syncData() {
