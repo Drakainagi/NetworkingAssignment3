@@ -68,6 +68,7 @@ private:
     void SpawnAsteroid();
     void SpawnCelestialBody();
     //void SpawnBoss();
+    Vector3 GetOffScreenPosition(float width, float height, float offset);
 };
 
 #endif // SCENE_ASTEROID_H

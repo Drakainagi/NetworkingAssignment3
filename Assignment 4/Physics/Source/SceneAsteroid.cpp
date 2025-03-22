@@ -32,9 +32,9 @@ void SceneAsteroid::Init()
 {
 	SceneBase::Init();
 
-	m_asteroidSpawnRate = 1.0f;
+	m_asteroidSpawnRate = 5.0f;
 	m_enemySpawnRate = 9999.0f;
-	m_celestialBodySpawnRate = 10.0f;
+	m_celestialBodySpawnRate = 30.0f;
 
 	srand(static_cast<unsigned>(time(nullptr)));
 	Math::InitRNG();
@@ -178,9 +178,7 @@ void SceneAsteroid::Update(float dt)
 	}
 	m_playerShip->update(dt);
 
-	///////////////////////////////////////////////////////////////////////////////
-	// Spawning OBJ
-	if(0)
+#pragma region Spawning OBJ
 	{
 		m_asteroidSpawnRate -= 0.01f / dt;
 		m_enemySpawnRate -= 0.0003f / dt;
@@ -189,7 +187,7 @@ void SceneAsteroid::Update(float dt)
 
 		if (m_asteroidSpawnRate <= 0)
 		{
-			m_asteroidSpawnRate = 1.0f;
+			m_asteroidSpawnRate = 5.0f;
 			SpawnAsteroid();
 		}
 		if (m_enemySpawnRate <= 0)
@@ -261,7 +259,11 @@ void SceneAsteroid::Update(float dt)
 			SpawnCelestialBody();
 		}
 
+	}
+#pragma endregion
 
+		if (0)
+		{
 		if (m_gameStarted)
 		{
 #pragma region Player Shooting Controls
@@ -1049,40 +1051,92 @@ void SceneAsteroid::Update(float dt)
 }
 
 #pragma region TODO: Server Side
+Vector3 SceneAsteroid::GetOffScreenPosition(float width, float height, float offset)
+{
+	Vector3 pos;
+	int side = rand() % 4;
+	switch (side)
+	{
+	case 0: // left
+		pos.x = - offset;
+		pos.y = Math::RandFloatMinMax(0, height);
+		break;
+	case 1: // right
+		pos.x = width + offset;
+		pos.y = Math::RandFloatMinMax(0, height);
+		break;
+	case 2: // top
+		pos.y = height + offset;
+		pos.x = Math::RandFloatMinMax(0, width);
+		break;
+	case 3: // bottom
+		pos.y = - offset;
+		pos.x = Math::RandFloatMinMax(0, width);
+		break;
+	default:
+		pos = Vector3(0, 0, 0);
+		break;
+	}
+	pos.z = 0.0f;
+	return pos;
+}
+
 void SceneAsteroid::SpawnAsteroid()
 {
+	static Vector3 centre = Vector3(Application::GetWindowWidth() / 2, Application::GetWindowHeight() / 2);
 	std::shared_ptr<GameObject> asteroid = FetchGO();
 	asteroid->active = true;
 	asteroid->type = GAMEOBJECT_TYPE::GO_ASTEROID;
-	asteroid->pos = Vector3{ Math::RandFloatMinMax(-m_worldWidth, m_worldWidth), Math::RandFloatMinMax(-m_worldHeight, m_worldHeight), 0.0f };
-	float scale = Math::RandFloatMinMax(5.0f, 15.0f);
+	// Spawn outside using world dimensions and an offset.
+	asteroid->pos = GetOffScreenPosition(m_worldWidth, m_worldHeight, 50.0f);
+	float scale = Math::RandFloatMinMax(50.0f, 150.0f);
 	asteroid->scale.Set(scale, scale, 0.0f);
 	asteroid->health = 10.0f * scale;
-    asteroid->vel = Vector3{ Math::RandFloatMinMax(-10.0f, 10.0f), Math::RandFloatMinMax(-10.0f, 10.0f), 0.0f };
+	// Set velocity inward (toward (0,0,0))
+	Vector3 direction = (centre + Vector3(Math::RandFloatMinMax(-800.0f, 800.0f), Math::RandFloatMinMax(-450.0f, 450.0f), 0)
+		- asteroid->pos).Normalized();
+	float speed = Math::RandFloatMinMax(50.0f, 100.0f);
+	asteroid->vel = direction * speed;
 }
 
 void SceneAsteroid::SpawnEnemy()
 {
+	static Vector3 centre = Vector3(Application::GetWindowWidth() / 2, Application::GetWindowHeight() / 2);
 	std::shared_ptr<GameObject> enemy = FetchGO();
 	enemy->active = true;
 	enemy->type = GAMEOBJECT_TYPE::GO_ENEMYSHIP;
-	enemy->pos = Vector3{ Math::RandFloatMinMax(-m_worldWidth, m_worldWidth), Math::RandFloatMinMax(-m_worldHeight, m_worldHeight), 0.0f };
-	enemy->scale.Set(5.0f, 5.0f, 5.0f);
+	enemy->pos = GetOffScreenPosition(m_worldWidth, m_worldHeight, 50.0f);
+	enemy->scale.Set(50.0f, 50.0f, 50.0f);
 	enemy->health = 50.0f;
 	enemy->angle = 0.0f;
+	Vector3 direction = (centre + Vector3(Math::RandFloatMinMax(-800.0f, 800.0f), Math::RandFloatMinMax(-450.0f, 450.0f),0)
+		- enemy->pos).Normalized();
+	enemy->vel = direction * Math::RandFloatMinMax(50.0f, 100.0f);
 }
 
 void SceneAsteroid::SpawnCelestialBody()
 {
+	static Vector3 centre = Vector3(Application::GetWindowWidth() / 2, Application::GetWindowHeight() / 2);
 	std::shared_ptr<GameObject> celestial = FetchGO();
 	celestial->active = true;
+	// Randomly choose type between black hole and planet.
 	celestial->type = (rand() % 10 == 9) ? GAMEOBJECT_TYPE::GO_BLACKHOLE : GAMEOBJECT_TYPE::GO_PLANET;
-	celestial->pos = Vector3{ Math::RandFloatMinMax(-m_worldWidth * 1.5, m_worldWidth * 1.5), Math::RandFloatMinMax(-m_worldHeight * 1.5, m_worldHeight * 1.5), 0.0f };
-	float scale = (celestial->type == GAMEOBJECT_TYPE::GO_BLACKHOLE) ? Math::RandFloatMinMax(10.0f, 80.0f) : Math::RandFloatMinMax(30.0f, 60.0f);
+	// Use 1.5x world dimensions for celestial bodies.
+	celestial->pos = GetOffScreenPosition(m_worldWidth * 1.5f, m_worldHeight * 1.5f, 50.0f);
+
+	float scale;
+	if (celestial->type == GAMEOBJECT_TYPE::GO_BLACKHOLE)
+		scale = Math::RandFloatMinMax(100.0f, 800.0f);
+	else
+		scale = Math::RandFloatMinMax(300.0f, 600.0f);
+
 	celestial->scale.Set(scale, scale, 0.0f);
 	celestial->mass = (celestial->type == GAMEOBJECT_TYPE::GO_BLACKHOLE) ? 30 * scale : 10 * scale;
 	celestial->health = (celestial->type == GAMEOBJECT_TYPE::GO_PLANET) ? 20 * scale : 0.0f;
-	celestial->vel = { 0, 0, 0 };
+
+	Vector3 direction = (centre + Vector3(Math::RandFloatMinMax(-800.0f, 800.0f), Math::RandFloatMinMax(-450.0f, 450.0f), 0)
+		- celestial->pos).Normalized();
+	celestial->vel = direction * Math::RandFloatMinMax(30.0f, 70.0f);
 }
 
 void SceneAsteroid::SyncStateToClients()
