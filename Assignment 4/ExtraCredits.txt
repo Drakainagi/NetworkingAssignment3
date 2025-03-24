@@ -1,0 +1,9 @@
+///////////////////////////////////////////////////////////////////////////////////////////////////////
+IMPORTANT PLS PRESS '1' TO ACCESS EXTRA CONTENT
+////////////////////////////////////////////////////////////////////////////////////////////////////////
+- Physics Collision (Change of vel & momentum) between Asteroids with mass based on asteroid scaling
+- Asteroid Cluster due to mass of Asteroid (Smaller Asteroids stick to Bigger Asteroids) when contact
+- Parallax Scrolling 
+- Endless looping Background
+- Texture Loading
+- New Game State Switching
