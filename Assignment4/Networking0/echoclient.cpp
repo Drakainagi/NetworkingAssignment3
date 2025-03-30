@@ -28,6 +28,7 @@
 // Multiplayer Spaceships Client (UDP Only)
 // Connects to server and sends input packets in real-time
 
+#if 0
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -177,3 +178,5 @@ int main()
     WSACleanup();
     return 0;
 }
+
+#endif

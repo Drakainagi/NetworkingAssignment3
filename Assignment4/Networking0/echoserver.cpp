@@ -26,6 +26,8 @@
 
 #define WIN32_LEAN_AND_MEAN
 #define _WINSOCK_DEPRECATED_NO_WARNINGS
+
+#if 1
 #include <winsock2.h>
 #include <ws2tcpip.h>
 #include <windows.h>
@@ -66,6 +68,8 @@ struct PlayerInputPacket {
     uint32_t playerId;
     float moveX;
     float moveY;
+    float RotateX; // Turn left or right
+    float shoot; // whether a bullet is being shot
 };
 #pragma pack(pop)
 
@@ -178,3 +182,5 @@ int main() {
     WSACleanup();
     return 0;
 }
+
+#endif
