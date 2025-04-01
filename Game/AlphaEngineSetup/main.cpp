@@ -4,8 +4,11 @@
   \file   client.cpp
   \author Joshua Sim Yue Chen
   \brief  This file implements the client for the asteroid shooter.
-          The client sends player input to the server, receives game state updates,
-          and renders the game objects using the AE-Engine rendering pipeline.
+          The client computes its own ship movement (position and rotation)
+          using simplified physics (inspired by your playership movement code),
+          sends a PLAYER_UPDATE packet to the server with the new state, receives
+          game state updates from the server, and renders the game objects using the
+          AE-Engine rendering pipeline.
 */
 /* End Header
 *******************************************************************/
@@ -22,19 +25,23 @@
 #include <conio.h>
 #include <vector>
 #include <cstring>
+#include <cmath>
+#include <mutex>
 
 #pragma comment(lib, "ws2_32.lib")
 
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 1024;
+constexpr int MAX_GAMEOBJECTS = 4000; // Maximum number of game objects expected
 
 // Packet types (must match server definitions)
 enum PacketType : uint8_t {
     JOIN_REQUEST = 0x01,
     JOIN_ACCEPT = 0x02,
     GAME_UPDATE = 0x03,
-    PLAYER_INPUT = 0x04,
+    // Use PLAYER_UPDATE instead of PLAYER_INPUT.
+    PLAYER_UPDATE = 0x04,
     ACK = 0x05
 };
 
@@ -48,11 +55,13 @@ struct JoinAcceptPacket {
     uint32_t playerId;
 };
 
-struct PlayerInputPacket {
-    uint8_t type = PLAYER_INPUT;
+// New packet type: client sends its current state (position and angle).
+struct PlayerUpdatePacket {
+    uint8_t type = PLAYER_UPDATE;
     uint32_t playerId;
-    float moveX;
-    float moveY;
+    float pos_x;
+    float pos_y;
+    float angle; // Orientation (in radians)
 };
 
 struct GameObjectData {
@@ -66,6 +75,7 @@ struct GameObjectData {
 struct GameUpdatePacket {
     uint8_t type = GAME_UPDATE;
     uint32_t objectCount;
+    // This packet is built dynamically; the following fixed array is legacy.
     GameObjectData objects[4000];
 };
 #pragma pack(pop)
@@ -76,7 +86,10 @@ uint32_t myPlayerId = 0;
 SOCKET udpSocket = INVALID_SOCKET;
 sockaddr_in serverAddr{};
 
-// Local game object list for rendering
+// ----------------------------------------------------------------------
+// Object Pooling Setup
+// Instead of a vector that we clear every update, we use two fixed arrays
+// (double-buffered) to store the game objects.
 struct GameObject {
     AEMtx33 transform;
     float pos_x, pos_y;
@@ -84,16 +97,32 @@ struct GameObject {
     float rotation;
     uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet
 };
+// The buffers for game objects.
+GameObject gRenderPool[MAX_GAMEOBJECTS];
+GameObject gBackPool[MAX_GAMEOBJECTS];
+// Count of valid objects in the pool.
+std::atomic<uint32_t> gGameObjectCount{ 0 };
+// Mutex to guard swapping buffers.
+std::mutex gPoolMutex;
 
-std::vector<GameObject> gGameObjects;
-
-// Textures and mesh used for rendering.
+// AE-Engine mesh and textures.
 AEGfxVertexList* pMesh = nullptr;
 AEGfxTexture* AsteroidTexture = nullptr;
 AEGfxTexture* PlayerTexture = nullptr;
 AEGfxTexture* BulletTexture = nullptr;
 
-// Receive thread: handles JOIN_ACCEPT and GAME_UPDATE packets.
+// ----------------------------------------------------------------------
+// ----- Player Physics Variables -----
+// These simulate the ship movement locally.
+float playerPosX = 400.0f;
+float playerPosY = 300.0f;
+float playerAngle = 0.0f;           // Orientation in radians.
+float playerVelX = 0.0f;
+float playerVelY = 0.0f;
+float playerAngularVelocity = 0.0f;
+
+// ----- Receive Thread -----
+// Handles JOIN_ACCEPT and GAME_UPDATE packets.
 void receiveThread(SOCKET udpSocket)
 {
     char buffer[BUFFER_SIZE];
@@ -101,7 +130,8 @@ void receiveThread(SOCKET udpSocket)
     int fromLen = sizeof(fromAddr);
     while (running) {
         int bytes = recvfrom(udpSocket, buffer, BUFFER_SIZE, 0, reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
-        if (bytes <= 0) continue;
+        if (bytes <= 0)
+            continue;
         uint8_t packetType = buffer[0];
         if (packetType == JOIN_ACCEPT) {
             JoinAcceptPacket* pkt = reinterpret_cast<JoinAcceptPacket*>(buffer);
@@ -110,63 +140,108 @@ void receiveThread(SOCKET udpSocket)
         }
         else if (packetType == GAME_UPDATE) {
             GameUpdatePacket* update = reinterpret_cast<GameUpdatePacket*>(buffer);
-            // Update the local game object list.
-            gGameObjects.clear();
-            for (uint32_t i = 0; i < update->objectCount; ++i) {
-                GameObjectData& data = update->objects[i];
-                GameObject obj;
-                obj.pos_x = data.pos_x;
-                obj.pos_y = data.pos_y;
-                obj.rotation = data.rotation;
-                obj.scale = data.scale;
-                obj.objectType = data.objectType;
-                gGameObjects.push_back(obj);
+            uint32_t count = update->objectCount;
+            if (count > MAX_GAMEOBJECTS)
+                count = MAX_GAMEOBJECTS;
+            // Write into the back pool.
+            for (uint32_t i = 0; i < count; ++i) {
+                gBackPool[i].pos_x = update->objects[i].pos_x;
+                gBackPool[i].pos_y = update->objects[i].pos_y;
+                gBackPool[i].rotation = update->objects[i].rotation;
+                gBackPool[i].scale = update->objects[i].scale;
+                gBackPool[i].objectType = update->objects[i].objectType;
+            }
+            // Atomically update the object count and swap the buffers.
+            {
+                std::lock_guard<std::mutex> lock(gPoolMutex);
+                // Swap back pool into render pool.
+                memcpy(gRenderPool, gBackPool, sizeof(GameObject) * count);
+                gGameObjectCount.store(count);
             }
         }
     }
 }
 
-// Update function: handles input and sends player input to server.
+// ----- Update Function -----
+// Computes the ship movement locally (physics) and sends the new state to the server.
 void Update(float dt, int clientId)
 {
-    static float inputSendCooldown = 0.05f;
-    static float inputTimer = 0.0f;
-    inputTimer += dt;
-    if (inputTimer >= inputSendCooldown) {
-        float dx = 0.0f, dy = 0.0f;
-        if (AEInputCheckCurr(AEVK_W)) dy = 1.0f;
-        if (AEInputCheckCurr(AEVK_S)) dy = -1.0f;
-        if (AEInputCheckCurr(AEVK_A)) dx = -1.0f;
-        if (AEInputCheckCurr(AEVK_D)) dx = 1.0f;
-        if (dx != 0.0f || dy != 0.0f) {
-            PlayerInputPacket pkt;
-            pkt.type = PLAYER_INPUT;
-            // Use the JOIN_ACCEPT assigned id if available; else use local client id.
-            pkt.playerId = (myPlayerId != 0) ? myPlayerId : clientId;
-            pkt.moveX = dx;
-            pkt.moveY = dy;
-            sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
-                reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-        }
-        inputTimer = 0.0f;
+    // --- Physics simulation based on key input ---
+    // Thrust and rotation inputs.
+    float thrustInput = 0.0f;
+    float rotationInput = 0.0f;
+    if (AEInputCheckCurr(AEVK_W)) thrustInput = 1.0f;    // Thrust forward.
+    if (AEInputCheckCurr(AEVK_S)) thrustInput = -1.0f;   // Reverse thrust.
+    if (AEInputCheckCurr(AEVK_D)) rotationInput = -1.0f; // Rotate left.
+    if (AEInputCheckCurr(AEVK_A)) rotationInput = 1.0f;  // Rotate right.
+
+    // Adjusted constants for tighter controls.
+    const float thrustForce = 150.0f;      // Lowered acceleration for more precision.
+    const float torqueForce = 7.0f;        // Slightly increased for snappier rotation.
+    const float linearDamping = 0.7f;      // Damping applied to linear velocity.
+    const float angularDamping = 0.95f;    // Damping for rotation.
+
+    // Update linear velocity and position.
+    float accel = thrustForce * thrustInput;
+    // Compute acceleration in the direction of the ship’s angle.
+    playerVelX += cosf(playerAngle) * accel * dt;
+    playerVelY += sinf(playerAngle) * accel * dt;
+    // Apply linear damping to reduce drift.
+    playerVelX *= (1.0f - linearDamping * dt);
+    playerVelY *= (1.0f - linearDamping * dt);
+    playerPosX += playerVelX * dt;
+    playerPosY += playerVelY * dt;
+
+    // Update angular velocity and angle.
+    playerAngularVelocity *= (1.0f - angularDamping * dt);
+    playerAngularVelocity += torqueForce * rotationInput * dt;
+    playerAngle += playerAngularVelocity * dt;
+
+    // Wrap-around logic (assumes world size of 800x600).
+    if (playerPosX < 0)
+        playerPosX += 800;
+    else if (playerPosX > 800)
+        playerPosX -= 800;
+    if (playerPosY < 0)
+        playerPosY += 600;
+    else if (playerPosY > 600)
+        playerPosY -= 600;
+
+    // ----- Send Updated State to the Server -----
+    PlayerUpdatePacket pkt;
+    pkt.type = PLAYER_UPDATE;
+    pkt.playerId = (myPlayerId != 0) ? myPlayerId : clientId;
+    pkt.pos_x = playerPosX;
+    pkt.pos_y = playerPosY;
+    pkt.angle = playerAngle;
+    int sentBytes = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+        reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
+    if (sentBytes == SOCKET_ERROR) {
+        std::cerr << "[ERROR] sendto PLAYER_UPDATE failed: " << WSAGetLastError() << std::endl;
     }
 }
 
-// Render function: draws game objects using AE-Engine.
+// ----- Render Function -----
+// Draws game objects using AE-Engine.
 void Render()
 {
-    // Render each game object in the list.
-    for (const auto& obj : gGameObjects) {
+    // Lock the pool for a consistent snapshot.
+    uint32_t count;
+    {
+        std::lock_guard<std::mutex> lock(gPoolMutex);
+        count = gGameObjectCount.load();
+    }
+    for (uint32_t i = 0; i < count; i++) {
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
-        AEMtx33Scale(&scaleMtx, obj.scale, obj.scale);
+        AEMtx33Scale(&scaleMtx, gRenderPool[i].scale, gRenderPool[i].scale);
         // Adjust rotation so that sprite orientation is correct.
-        AEMtx33Rot(&rotMtx, obj.rotation + (3.1415926f / 2.0f));
-        AEMtx33Trans(&transMtx, obj.pos_x, obj.pos_y);
+        AEMtx33Rot(&rotMtx, gRenderPool[i].rotation + (3.1415926f / 2.0f));
+        AEMtx33Trans(&transMtx, gRenderPool[i].pos_x, gRenderPool[i].pos_y);
         AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
 
         // Select texture based on object type.
-        switch (obj.objectType) {
+        switch (gRenderPool[i].objectType) {
         case 0:
             AEGfxTextureSet(PlayerTexture, 0, 0);
             break;
@@ -220,7 +295,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     int clientId = 0;
     std::cout << "Enter client ID (1-4): ";
     std::cin >> clientId;
-    if (clientId < 1 || clientId > 4) clientId = 1;
+    if (clientId < 1 || clientId > 4)
+        clientId = 1;
     sockaddr_in clientAddr{};
     clientAddr.sin_family = AF_INET;
     clientAddr.sin_addr.s_addr = INADDR_ANY;
@@ -285,10 +361,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             gGameRunning = false;
     }
 
-    // Cleanup.
+    // Cleanup resources.
     AEGfxMeshFree(pMesh);
     AEGfxTextureUnload(AsteroidTexture);
     AEGfxTextureUnload(PlayerTexture);
+    AEGfxTextureUnload(BulletTexture);
     AESysExit();
 
     running = false;
