@@ -179,15 +179,17 @@ void spawnAsteroid()
 void updateGameState(float dt)
 {
     std::lock_guard<std::mutex> lock(gameStateMutex);
+    float windowWidth = 1600.0f;
+    float windowHeight = 900.0f;
     // Asteroids update.
     for (auto& asteroid : asteroids)
     {
         asteroid.pos_x += asteroid.vel_x * dt;
         asteroid.pos_y += asteroid.vel_y * dt;
-        if (asteroid.pos_x < 0) asteroid.pos_x += 800;
-        if (asteroid.pos_x > 800) asteroid.pos_x -= 800;
-        if (asteroid.pos_y < 0) asteroid.pos_y += 600;
-        if (asteroid.pos_y > 600) asteroid.pos_y -= 600;
+        if (asteroid.pos_x < -windowWidth / 2) asteroid.pos_x += windowHeight;
+        if (asteroid.pos_x > windowWidth/2) asteroid.pos_x -= windowHeight;
+        if (asteroid.pos_y < -windowHeight / 2) asteroid.pos_y += windowHeight;
+        if (asteroid.pos_y > windowHeight/2) asteroid.pos_y -= windowHeight;
     }
     // Bullets update.
     for (auto& bullet : bullets)

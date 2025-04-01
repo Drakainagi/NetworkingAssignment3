@@ -197,15 +197,19 @@ void Update(float dt, int clientId)
     playerAngularVelocity += torqueForce * rotationInput * dt;
     playerAngle += playerAngularVelocity * dt;
 
-    // Wrap-around logic (assumes world size of 800x600).
-    if (playerPosX < 0)
-        playerPosX += 800;
-    else if (playerPosX > 800)
-        playerPosX -= 800;
-    if (playerPosY < 0)
-        playerPosY += 600;
-    else if (playerPosY > 600)
-        playerPosY -= 600;
+    // Wrap-around logic (assumes world size of 1600x900).
+    // --- Wrap-around Logic using Dynamic Window Size ---
+    float windowWidth = 1600.0f;
+    float windowHeight = 900.0f;
+    if (playerPosX < -windowWidth/2)
+        playerPosX += windowWidth;
+    else if (playerPosX > windowWidth / 2)
+        playerPosX -= windowWidth;
+    if (playerPosY < -windowHeight/2)
+        playerPosY += windowHeight;
+    else if (playerPosY > windowHeight / 2)
+        playerPosY -= windowHeight;
+
 
     // ----- Send Updated State to the Server -----
     PlayerUpdatePacket pkt;
