@@ -17,8 +17,82 @@
 // Replaces planets with general-purpose GameObjects (e.g., asteroids)
 //
 
+#define WIN32_LEAN_AND_MEAN
 #include <crtdbg.h> // To check for memory leaks
 #include "AEEngine.h"
+#include <winsock2.h>       // Must come before windows.h
+#include <ws2tcpip.h>       // For inet_pton, etc.
+#include <windows.h>        // Only after winsock2.h
+#include <iostream>
+#include <thread>
+#include <atomic>
+#include <conio.h>
+
+
+// Client echo
+
+
+
+#pragma comment(lib, "ws2_32.lib")
+
+constexpr uint16_t SERVER_PORT = 9000;
+constexpr int CLIENT_PORT_START = 9001;  // Each client should pick a unique port
+constexpr int BUFFER_SIZE = 1024;
+
+enum PacketType : uint8_t
+{
+	JOIN_REQUEST = 0x01,
+	JOIN_ACCEPT = 0x02,
+	GAME_UPDATE = 0x03,
+	PLAYER_INPUT = 0x04,
+	ACK = 0x05
+};
+
+#pragma pack(push, 1)
+struct JoinRequestPacket
+{
+	uint8_t type = JOIN_REQUEST;
+};
+
+struct JoinAcceptPacket
+{
+	uint8_t type = JOIN_ACCEPT;
+	uint32_t playerId;
+};
+
+struct PlayerInputPacket
+{
+	uint8_t type = PLAYER_INPUT;
+	uint32_t playerId;
+	float moveX;
+	float moveY;
+};
+#pragma pack(pop)
+
+std::atomic<bool> running{ true };
+uint32_t myPlayerId = 0;
+
+void receiveThread(SOCKET udpSocket)
+{
+	char buffer[BUFFER_SIZE];
+	sockaddr_in fromAddr;
+	int fromLen = sizeof(fromAddr);
+
+	while (running)
+	{
+		int bytes = recvfrom(udpSocket, buffer, BUFFER_SIZE, 0, (sockaddr*)&fromAddr, &fromLen);
+		if (bytes <= 0) continue;
+
+		uint8_t packetType = buffer[0];
+		if (packetType == JOIN_ACCEPT)
+		{
+			JoinAcceptPacket* pkt = reinterpret_cast<JoinAcceptPacket*>(buffer);
+			myPlayerId = pkt->playerId;
+			std::cout << "[JOINED] Assigned Player ID: " << myPlayerId << std::endl;
+		}
+	}
+}
+
 
 #define MAX_GAME_OBJECTS 4000
 
@@ -161,12 +235,69 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_ LPWSTR    lpCmdLine,
 	_In_ int       nCmdShow)
 {
+
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+		std::cerr << "WSAStartup failed." << std::endl;
+		return 1;
+	}
+
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
 
+	AllocConsole();
+	FILE* fp;
+	freopen_s(&fp, "CONOUT$", "w", stdout);
+	freopen_s(&fp, "CONIN$", "r", stdin);
+
+
 	AESysInit(hInstance, nCmdShow, 1600, 900, 1, 60, true, NULL);
 	AESysSetWindowTitle("Simple Asteroid Renderer");
+
+	//socket
+	
+
+	SOCKET udpSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (udpSocket == INVALID_SOCKET) {
+		std::cerr << "Failed to create socket." << std::endl;
+		WSACleanup();
+		return 1;
+	}
+
+	int clientId = 0;
+	std::cout << "Enter client ID (1-4): ";
+	std::cin >> clientId;
+	if (clientId < 1 || clientId > 4) clientId = 1;
+
+	sockaddr_in clientAddr{};
+	clientAddr.sin_family = AF_INET;
+	clientAddr.sin_addr.s_addr = INADDR_ANY;
+	clientAddr.sin_port = htons(CLIENT_PORT_START + clientId - 1);
+
+	if (bind(udpSocket, (sockaddr*)&clientAddr, sizeof(clientAddr)) == SOCKET_ERROR)
+	{
+		std::cerr << "Bind failed." << std::endl;
+		closesocket(udpSocket);
+		WSACleanup();
+		return 1;
+	}
+
+	sockaddr_in serverAddr{};
+	serverAddr.sin_family = AF_INET;
+	char serverIpStr[INET_ADDRSTRLEN];
+	std::cout << "Enter server IP address: ";
+	std::cin >> serverIpStr;
+	inet_pton(AF_INET, serverIpStr, &serverAddr.sin_addr);
+	serverAddr.sin_port = htons(SERVER_PORT);
+
+	JoinRequestPacket join{};
+	sendto(udpSocket, reinterpret_cast<char*>(&join), sizeof(join), 0,
+		(sockaddr*)&serverAddr, sizeof(serverAddr));
+
+	std::thread recvThread(receiveThread, udpSocket);
+
+	std::cout << "Use WASD to move. Press Q to quit.\n";
 
 	// Load quad mesh
 	AEGfxVertexList* pMesh = nullptr;
@@ -202,6 +333,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		}
 	}
 
+	float inputSendCooldown = 0.05f;   // Throttle to 20 packets/sec
+	float inputTimer = 0.0f;
+
 	while (gGameRunning)
 	{
 		AESysFrameStart();
@@ -224,6 +358,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		
 		//Input handling // Send packet to server here 
 
+			/* OG 
 		if (AEInputCheckCurr(AEVK_A))
 			player->rotation += ROTATE_SPEED * dt;
 
@@ -242,6 +377,35 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 			player->pos_x -= cosf(angle) * MOVE_SPEED * dt;
 			player->pos_y -= sinf(angle) * MOVE_SPEED * dt;
 		}
+		*/
+
+			inputTimer += dt;
+
+			if (inputTimer >= inputSendCooldown)
+			{
+				float dx = 0.0f, dy = 0.0f;
+
+				if (AEInputCheckCurr(AEVK_W)) dy = 1.0f;
+				if (AEInputCheckCurr(AEVK_S)) dy = -1.0f;
+				if (AEInputCheckCurr(AEVK_A)) dx = -1.0f;
+				if (AEInputCheckCurr(AEVK_D)) dx = 1.0f;
+
+				// Only send packet if there's input
+				if (dx != 0.0f || dy != 0.0f)
+				{
+					PlayerInputPacket pkt;
+					pkt.type = PLAYER_INPUT;
+					pkt.playerId = clientId;
+					pkt.moveX = dx;
+					pkt.moveY = dy;
+
+					sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+						(sockaddr*)&serverAddr, sizeof(serverAddr));
+				}
+
+				inputTimer = 0.0f; // Reset timer
+			}
+
 
 
 		if (AEInputCheckTriggered(AEVK_SPACE))
