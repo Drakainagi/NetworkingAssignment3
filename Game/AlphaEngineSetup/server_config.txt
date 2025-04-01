@@ -1,0 +1,5 @@
+# Server Configuration Parameters
+CHUNK_SIZE = 32768 
+ACK_TIMEOUT = 1000
+MAX_RETRIES = 10
+WINDOW_SIZE = 128

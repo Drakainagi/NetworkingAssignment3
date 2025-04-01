@@ -27,12 +27,12 @@
     <ClCompile Include="echoserver.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="taskqueue.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="taskqueue.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="taskqueue.hpp">
       <Filter>Source Files</Filter>
     </ClInclude>
   </ItemGroup>

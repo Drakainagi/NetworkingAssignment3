@@ -10,7 +10,6 @@
 #include <mutex>
 #include <optional>
 #include <thread>
-#include <iostream>
 
 template <typename TItem, typename TAction, typename TOnDisconnect>
 class TaskQueue
