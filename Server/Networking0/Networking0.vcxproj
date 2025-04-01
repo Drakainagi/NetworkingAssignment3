@@ -19,14 +19,7 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="client_template.cpp" />
-    <ClCompile Include="echoclient.cpp" />
     <ClCompile Include="echoserver.cpp" />
-    <ClCompile Include="server_template.cpp" />
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="taskqueue.h" />
-    <ClInclude Include="taskqueue.hpp" />
   </ItemGroup>
   <PropertyGroup Label="Globals">
     <VCProjectVersion>17.0</VCProjectVersion>

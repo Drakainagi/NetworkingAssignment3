@@ -15,25 +15,8 @@
     </Filter>
   </ItemGroup>
   <ItemGroup>
-    <ClCompile Include="server_template.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="client_template.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
-    <ClCompile Include="echoclient.cpp">
-      <Filter>Source Files</Filter>
-    </ClCompile>
     <ClCompile Include="echoserver.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
-  </ItemGroup>
-  <ItemGroup>
-    <ClInclude Include="taskqueue.h">
-      <Filter>Source Files</Filter>
-    </ClInclude>
-    <ClInclude Include="taskqueue.hpp">
-      <Filter>Source Files</Filter>
-    </ClInclude>
   </ItemGroup>
 </Project>
