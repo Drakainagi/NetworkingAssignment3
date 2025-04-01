@@ -44,6 +44,8 @@ constexpr uint16_t SERVER_PORT = 9000;
 constexpr int MAX_PLAYERS = 4;
 constexpr int BUFFER_SIZE = 1024;
 
+
+
 enum PacketType : uint8_t 
 {
     JOIN_REQUEST = 0x01,

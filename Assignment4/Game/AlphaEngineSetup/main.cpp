@@ -1,5 +1,5 @@
 ﻿//
-// Rewrote asteroid with AE-Engine rendering pipeline 
+// Rewrote asteroid with AE-Engine rendering pipeline for server
 // 
 // Written by: Joshua Sim Yue Chen
 // 
@@ -17,8 +17,67 @@
 // Replaces planets with general-purpose GameObjects (e.g., asteroids)
 //
 
+#define _WINSOCK_DEPRECATED_NO_WARNINGS
+#define WIN32_LEAN_AND_MEAN
 #include <crtdbg.h> // To check for memory leaks
 #include "AEEngine.h"
+#include <winsock2.h>       // Must come before windows.h
+#include <ws2tcpip.h>       // For inet_pton, etc.
+#include <windows.h>        // Only after winsock2.h
+#include <iostream>
+#include <thread>
+#include <atomic>
+#include <conio.h>
+#include <mutex>
+#include <vector>
+#include <map>
+
+#pragma comment(lib, "ws2_32.lib")
+
+//Server vars
+constexpr uint16_t SERVER_PORT = 9000;
+constexpr int MAX_PLAYERS = 4;
+constexpr int BUFFER_SIZE = 1024;
+
+enum PacketType : uint8_t
+{
+	JOIN_REQUEST = 0x01,
+	JOIN_ACCEPT = 0x02,
+	GAME_UPDATE = 0x03,
+	PLAYER_INPUT = 0x04,
+	ACK = 0x05
+};
+
+
+#pragma pack(push, 1)
+struct JoinRequestPacket {
+	uint8_t type = JOIN_REQUEST;
+};
+
+struct JoinAcceptPacket {
+	uint8_t type = JOIN_ACCEPT;
+	uint32_t playerId;
+};
+
+struct PlayerInputPacket {
+	uint8_t type = PLAYER_INPUT;
+	uint32_t playerId;
+	float moveX;
+	float moveY;
+	float RotateX; // Turn left or right
+	float shoot; // whether a bullet is being shot
+};
+#pragma pack(pop)
+
+struct ClientInfo {
+	sockaddr_in address;
+	uint32_t playerId;
+};
+
+std::mutex clientsMutex;
+std::vector<ClientInfo> clients;
+std::atomic<uint32_t> nextPlayerId{ 1 };
+
 
 #define MAX_GAME_OBJECTS 4000
 
@@ -51,6 +110,75 @@ struct AABB {
 	float min_x, min_y;
 	float max_x, max_y;
 };
+
+// -------------------------- Server functions --------------------------
+// 
+
+
+bool addressesEqual(const sockaddr_in& a, const sockaddr_in& b)
+{
+	return a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port;
+}
+
+void serverLoop(SOCKET serverSocket)
+{
+	char buffer[BUFFER_SIZE];
+	sockaddr_in clientAddr;
+	int clientAddrLen = sizeof(clientAddr);
+
+	while (true)
+	{
+		int bytesReceived = recvfrom(serverSocket, buffer, BUFFER_SIZE, 0,
+			(sockaddr*)&clientAddr, &clientAddrLen);
+
+		if (bytesReceived <= 0)
+			continue;
+
+		uint8_t packetType = buffer[0];
+
+		if (packetType == JOIN_REQUEST)
+		{
+			std::lock_guard<std::mutex> lock(clientsMutex);
+
+			if (clients.size() >= MAX_PLAYERS) {
+				std::cout << "[WARN] Max players reached. Ignoring JOIN." << std::endl;
+				continue;
+			}
+
+			// Check if already connected
+			bool alreadyExists = false;
+			for (const auto& client : clients) {
+				if (addressesEqual(client.address, clientAddr)) {
+					alreadyExists = true;
+					break;
+				}
+			}
+			if (alreadyExists) continue;
+
+			uint32_t assignedId = nextPlayerId++;
+			clients.push_back({ clientAddr, assignedId });
+
+			JoinAcceptPacket response;
+			response.type = JOIN_ACCEPT;
+			response.playerId = assignedId;
+
+			sendto(serverSocket, reinterpret_cast<char*>(&response), sizeof(response), 0,
+				(sockaddr*)&clientAddr, sizeof(clientAddr));
+
+			std::cout << "[INFO] Player " << assignedId << " joined from "
+				<< inet_ntoa(clientAddr.sin_addr) << ":" << ntohs(clientAddr.sin_port) << std::endl;
+		}
+		else if (packetType == PLAYER_INPUT)
+		{
+			PlayerInputPacket* input = reinterpret_cast<PlayerInputPacket*>(buffer);
+			std::cout << "[INPUT] Player " << input->playerId
+				<< " MoveX: " << input->moveX
+				<< " MoveY: " << input->moveY << std::endl;
+
+			// TODO: Queue this input to the game loop logic
+		}
+	}
+}
 
 //--------------------------- HELPER FUNCTIONS HERE ---------------------
 AABB GetAABB(const GameObject& obj)
@@ -161,9 +289,48 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 	_In_ LPWSTR    lpCmdLine,
 	_In_ int       nCmdShow)
 {
+
+	// Allocate a console to print to
+	AllocConsole();
+
+	// Redirect stdout to the new console
+	FILE* fp;
+	freopen_s(&fp, "CONOUT$", "w", stdout);
+	freopen_s(&fp, "CONIN$", "r", stdin);
+
 	_CrtSetDbgFlag(_CRTDBG_ALLOC_MEM_DF | _CRTDBG_LEAK_CHECK_DF);
 	UNREFERENCED_PARAMETER(hPrevInstance);
 	UNREFERENCED_PARAMETER(lpCmdLine);
+
+	//Server init
+	WSADATA wsaData;
+	if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
+		std::cerr << "WSAStartup failed." << std::endl;
+		return 1;
+	}
+
+	SOCKET serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (serverSocket == INVALID_SOCKET) {
+		std::cerr << "Failed to create UDP socket." << std::endl;
+		WSACleanup();
+		return 1;
+	}
+
+	sockaddr_in serverAddr{};
+	serverAddr.sin_family = AF_INET;
+	serverAddr.sin_addr.s_addr = INADDR_ANY;
+	serverAddr.sin_port = htons(SERVER_PORT);
+
+	if (bind(serverSocket, (sockaddr*)&serverAddr, sizeof(serverAddr)) == SOCKET_ERROR) {
+		std::cerr << "Bind failed." << std::endl;
+		closesocket(serverSocket);
+		WSACleanup();
+		return 1;
+	}
+
+	std::cout << "[SERVER] UDP server listening on port " << SERVER_PORT << std::endl;
+
+	std::thread networkThread(serverLoop, serverSocket);
 
 	AESysInit(hInstance, nCmdShow, 1600, 900, 1, 60, true, NULL);
 	AESysSetWindowTitle("Simple Asteroid Renderer");
@@ -403,6 +570,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 		if (AEInputCheckTriggered(AEVK_1)) AESysSetFullScreen(1);
 		if (AEInputCheckTriggered(AEVK_2)) AESysSetFullScreen(0);
 	}
+
+	networkThread.join();
+
+	closesocket(serverSocket);
+	WSACleanup();
+	return 0;
 
 	AEGfxMeshFree(pMesh);
 	AEGfxTextureUnload(AsteroidTexture);
