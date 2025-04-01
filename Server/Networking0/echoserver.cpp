@@ -173,12 +173,14 @@ void updateGameState(float dt)
 {
     std::lock_guard<std::mutex> lock(gameStateMutex);
     // Update players (simple integration; add friction or boundaries as needed)
-    for (auto& kv : players) {
+    for (auto& kv : players) 
+    {
         PlayerEntity& player = kv.second;
         // (For now, we assume the server directly sets pos_x, pos_y from input.)
     }
     // Update asteroids
-    for (auto& asteroid : asteroids) {
+    for (auto& asteroid : asteroids) 
+    {
         asteroid.pos_x += asteroid.vel_x * dt;
         asteroid.pos_y += asteroid.vel_y * dt;
         if (asteroid.pos_x < 0) asteroid.pos_x += 800;
@@ -187,7 +189,8 @@ void updateGameState(float dt)
         if (asteroid.pos_y > 600) asteroid.pos_y -= 600;
     }
     // Update bullets
-    for (auto& bullet : bullets) {
+    for (auto& bullet : bullets) 
+    {
         bullet.pos_x += bullet.vel_x * dt;
         bullet.pos_y += bullet.vel_y * dt;
         // (Remove bullets if off-screen, etc.)
@@ -197,52 +200,72 @@ void updateGameState(float dt)
 
 void broadcastGameState()
 {
-    GameUpdatePacket update;
-    update.type = GAME_UPDATE;
-    uint32_t count = 0;
+    std::vector<GameObjectData> gameObjects;
 
     {
         std::lock_guard<std::mutex> lock(gameStateMutex);
         // Pack player entities.
-        for (const auto& kv : players) {
-            if (count >= 4000) break;
-            update.objects[count].objectType = static_cast<uint8_t>(Player);
-            update.objects[count].pos_x = kv.second.pos_x;
-            update.objects[count].pos_y = kv.second.pos_y;
-            update.objects[count].rotation = kv.second.rotation;
-            update.objects[count].scale = kv.second.scale;
-            ++count;
+        for (const auto& kv : players) 
+        {
+            GameObjectData data;
+            data.objectType = static_cast<uint8_t>(Player);
+            data.pos_x = kv.second.pos_x;
+            data.pos_y = kv.second.pos_y;
+            data.rotation = kv.second.rotation;
+            data.scale = kv.second.scale;
+            gameObjects.push_back(data);
         }
         // Pack asteroids.
-        for (const auto& ast : asteroids) {
-            if (count >= 4000) break;
-            update.objects[count].objectType = static_cast<uint8_t>(Asteroid);
-            update.objects[count].pos_x = ast.pos_x;
-            update.objects[count].pos_y = ast.pos_y;
-            update.objects[count].rotation = ast.rotation;
-            update.objects[count].scale = ast.scale;
-            ++count;
+        for (const auto& ast : asteroids) 
+        {
+            GameObjectData data;
+            data.objectType = static_cast<uint8_t>(Asteroid);
+            data.pos_x = ast.pos_x;
+            data.pos_y = ast.pos_y;
+            data.rotation = ast.rotation;
+            data.scale = ast.scale;
+            gameObjects.push_back(data);
         }
         // Pack bullets.
-        for (const auto& b : bullets) {
-            if (count >= 4000) break;
-            update.objects[count].objectType = static_cast<uint8_t>(Bullet);
-            update.objects[count].pos_x = b.pos_x;
-            update.objects[count].pos_y = b.pos_y;
-            update.objects[count].rotation = b.rotation;
-            update.objects[count].scale = b.scale;
-            ++count;
+        for (const auto& b : bullets) 
+        {
+            GameObjectData data;
+            data.objectType = static_cast<uint8_t>(Bullet);
+            data.pos_x = b.pos_x;
+            data.pos_y = b.pos_y;
+            data.rotation = b.rotation;
+            data.scale = b.scale;
+            gameObjects.push_back(data);
         }
     }
-    update.objectCount = count;
 
-    // Send the update to every connected client.
-    std::lock_guard<std::mutex> lock(clientsMutex);
-    for (const auto& addr : clientAddresses) 
+    // Determine the packet size.
+    // Header consists of: type (1 byte) and objectCount (4 bytes)
+    size_t headerSize = sizeof(uint8_t) + sizeof(uint32_t);
+    size_t objectsSize = gameObjects.size() * sizeof(GameObjectData);
+    size_t packetSize = headerSize + objectsSize;
+
+    // Create a dynamic buffer to hold the packet.
+    std::vector<char> packetBuffer(packetSize);
+
+    // Write the header.
+    uint8_t packetType = GAME_UPDATE;
+    uint32_t objectCount = static_cast<uint32_t>(gameObjects.size());
+    memcpy(packetBuffer.data(), &packetType, sizeof(packetType));
+    memcpy(packetBuffer.data() + sizeof(packetType), &objectCount, sizeof(objectCount));
+
+    // Write the object data if any.
+    if (!gameObjects.empty()) 
     {
+        memcpy(packetBuffer.data() + headerSize, gameObjects.data(), objectsSize);
+    }
+
+    // Send the packet to every connected client.
+    std::lock_guard<std::mutex> lock(clientsMutex);
+    for (const auto& addr : clientAddresses) {
         int bytesSent = sendto(g_serverSocket,
-            reinterpret_cast<char*>(&update),
-            sizeof(update),
+            packetBuffer.data(),
+            static_cast<int>(packetSize),
             0,
             reinterpret_cast<const sockaddr*>(&addr),
             sizeof(addr));
@@ -363,7 +386,8 @@ int main()
     }
 
     SOCKET serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if (serverSocket == INVALID_SOCKET) {
+    if (serverSocket == INVALID_SOCKET) 
+    {
         std::cerr << "Failed to create UDP socket." << std::endl;
         WSACleanup();
         return 1;
@@ -377,12 +401,14 @@ int main()
 
     // Print local IP address.
     char hostname[256];
-    if (gethostname(hostname, sizeof(hostname)) != SOCKET_ERROR) {
+    if (gethostname(hostname, sizeof(hostname)) != SOCKET_ERROR) 
+    {
         addrinfo hints{}, * info = nullptr;
         hints.ai_family = AF_INET;
         hints.ai_socktype = SOCK_DGRAM;
         hints.ai_flags = AI_PASSIVE;
-        if (getaddrinfo(hostname, nullptr, &hints, &info) == 0 && info != nullptr) {
+        if (getaddrinfo(hostname, nullptr, &hints, &info) == 0 && info != nullptr) 
+        {
             sockaddr_in* addr = reinterpret_cast<sockaddr_in*>(info->ai_addr);
             char ip[INET_ADDRSTRLEN];
             inet_ntop(AF_INET, &(addr->sin_addr), ip, INET_ADDRSTRLEN);
@@ -391,7 +417,8 @@ int main()
         }
     }
 
-    if (bind(serverSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) {
+    if (bind(serverSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR) 
+    {
         std::cerr << "Bind failed." << std::endl;
         closesocket(serverSocket);
         WSACleanup();
