@@ -96,7 +96,7 @@ struct BulletSpawnPacket {
 };
 
 struct BulletSpawnMultiPacket {
-    uint8_t type;         // This will be BULLET_SPAWN or a new type if you prefer.
+    uint8_t type = BULLET_SPAWN;   // This will be BULLET_SPAWN or a new type if you prefer.
     uint32_t count;       // Number of bullets being sent.
     // Then an array of bullet data. For simplicity, we assume a fixed maximum.
     BulletSpawnPacket bullets[MAX_LOCAL_ENTITIES_SPAWN_RATE];  // Adjust size as necessary.
@@ -104,7 +104,7 @@ struct BulletSpawnMultiPacket {
 
 // Game object data received from the server (for remote objects).
 struct GameObjectData {
-    uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet, etc.
+    uint8_t objectType; // Use ObjectType
     uint32_t playerId;  // For player objects; for others, can be 0.
     float pos_x;
     float pos_y;
@@ -133,6 +133,7 @@ uint32_t myPlayerId = 0;
 SOCKET udpSocket = INVALID_SOCKET;
 sockaddr_in serverAddr{};
 
+
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
 // ----------------------------------------------------------------------
@@ -143,10 +144,17 @@ struct GameObject
     float vel_x = 0.0f, vel_y = 0.0f;
     float scale = 1.0f;
     float rotation = 0.0f;
-    uint8_t objectType = 0; // 0=Player, 1=Asteroid, 2=Bullet, etc.
+    uint8_t objectType = 0; // Use Object Type
     uint32_t playerId = 0;  // Valid for player objects.
 
     bool isSent = false;
+};
+
+enum ObjectType 
+{
+    Player,
+    Asteroid,
+    Bullet
 };
 
 // Remote pool: all entities updated from the server.
@@ -287,7 +295,7 @@ void UpdateLocalSimulation(float dt)
         gLocalPlayer.vel_y = playerVelY;
         gLocalPlayer.rotation = playerAngle;
         gLocalPlayer.scale = playerRenderScale;
-        gLocalPlayer.objectType = 0; // Local player.
+        gLocalPlayer.objectType = ObjectType::Player; // Local player.
         gLocalPlayer.playerId = myPlayerId;
     }
 
@@ -355,10 +363,10 @@ void ReceiveThread(SOCKET socket)
             {
                 const GameObjectData& src = update->objects[i];
                 // Skip local player's update.
-                if (src.objectType == 0 && src.playerId == myPlayerId)
+                if (src.objectType == ObjectType::Player && src.playerId == myPlayerId)
                     continue;
                 // Skip bullet updates from local player; local bullets are managed locally.
-                if (src.objectType == 2 && src.playerId == myPlayerId)
+                if (src.objectType == ObjectType::Bullet && src.playerId == myPlayerId)
                     continue;
 
                 gServerEntityPool[remoteIndex].pos_x = src.pos_x;
@@ -399,7 +407,7 @@ void ReceiveThread(SOCKET socket)
 
                         // Create a new bullet GameObject.
                         GameObject bullet;
-                        bullet.objectType = 2;          // Bullet type.
+                        bullet.objectType = ObjectType::Bullet;          // Bullet type.
                         bullet.playerId = multiPkt->bullets[i].playerId;
                         bullet.pos_x = multiPkt->bullets[i].pos_x;
                         bullet.pos_y = multiPkt->bullets[i].pos_y;
@@ -467,7 +475,7 @@ void SendLocalUpdate(int clientId)
         std::lock_guard<std::mutex> lock(gPoolMutex);
         for (uint32_t i = 0; i < gLocalEntityCount && multiPkt.count < 10; i++)
         {
-            if (gLocalEntities[i].objectType == 2 && !gLocalEntities[i].isSent)
+            if (gLocalEntities[i].objectType == ObjectType::Bullet && !gLocalEntities[i].isSent)
             {
                 // Prepare the bullet spawn data.
                 multiPkt.bullets[multiPkt.count].playerId = myPlayerId;
@@ -583,7 +591,7 @@ void Render()
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
 
         // Choose texture based on object type.
-        if (gLocalEntities[i].objectType == 2) // Bullet.
+        if (gLocalEntities[i].objectType == ObjectType::Bullet) // Bullet.
             AEGfxTextureSet(BulletTexture, 0, 0);
         else
             AEGfxTextureSet(AsteroidTexture, 0, 0); // Or any other texture for other entity types.
@@ -630,6 +638,7 @@ void Render()
         AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
 
+        std::cout << "Bullet is being  rendered where" << std::endl;
         // Use the bullet texture for bullet entities.
         AEGfxTextureSet(BulletTexture, 0, 0);
         AEGfxSetTransform(finalMtx.m);

@@ -478,6 +478,7 @@ void serverReceiveLoop(SOCKET serverSocket)
                 }
                 else
                 {
+                    //Help me double check why it keeps sending incomplete
                     std::cerr << "[WARN] Incomplete or invalid multi bullet packet received." << std::endl;
                 }
             }
