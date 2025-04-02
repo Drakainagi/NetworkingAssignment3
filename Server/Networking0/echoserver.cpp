@@ -342,6 +342,7 @@ void broadcastGameState()
             data.scale = p.scale;
             data.vel_x = p.vel_x;
             data.vel_y = p.vel_y;
+            data.isActive = true;
             gameObjects.push_back(data);
         }
         // Pack asteroids.

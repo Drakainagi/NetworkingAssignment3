@@ -131,7 +131,7 @@ struct GameObjectData {
     float vel_x;      // Velocity X component.
     float vel_y;      // Velocity Y component.
 
-    bool isActive = true;
+    bool isActive = false;
 };
 
 struct GameUpdatePacket {
@@ -166,6 +166,7 @@ struct ScoreUpdatePacket {
 // Global Networking Variables
 // ----------------------------------------------------------------------
 std::atomic<bool> running{ true };
+std::atomic<bool> gGameRunning{ true };
 uint32_t myPlayerId = 0;
 SOCKET udpSocket = INVALID_SOCKET;
 sockaddr_in serverAddr{};
