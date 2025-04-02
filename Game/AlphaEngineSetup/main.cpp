@@ -34,9 +34,8 @@
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 1024;
-constexpr int MAX_REMOTE_OBJECTS = 8000;  // Objects coming from the server. // Anything above 5000 is considered as cached or fake entities that server does not know, hence the mismatch
-constexpr int MAX_REMOTE_BULLETS = 3000;    // Maximum number of bullet entities.
-constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
+constexpr int MAX_REMOTE_OBJECTS = 300;  // Objects coming from the server. // Anything above 300 is considered as cached or fake entities that server does not know, hence the mismatch
+constexpr int MAX_LOCAL_ENTITIES = 100;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
 constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
 
@@ -199,9 +198,6 @@ enum ObjectType
 // Remote pool: all entities updated from the server.
 GameObject gRemoteEntities[MAX_REMOTE_OBJECTS];
 GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server. 
-std::atomic<uint32_t> gRemoteCount{ 0 };
-std::atomic<uint32_t> gBulletEntityCount{ 0 };
-std::atomic<uint32_t> gLocalEntityCount{ 0 };
 
 // Local pool: stores local player and other local spawned objects.
 GameObject gLocalPlayer; // Local player object.
@@ -237,18 +233,25 @@ s8	pFont;
 void SpawnLocalEntity(uint8_t objectType, float pos_x, float pos_y, float vel_x, float vel_y, float rotation, float scale)
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
-    if (gLocalEntityCount.load() >= MAX_LOCAL_ENTITIES)
-        return; // Pool full.
 
-    GameObject& obj = gLocalEntities[gLocalEntityCount++];
-    obj.objectType = objectType;
-    obj.playerId = myPlayerId;  // For example, associate with the local player.
-    obj.pos_x = pos_x;
-    obj.pos_y = pos_y;
-    obj.vel_x = vel_x;
-    obj.vel_y = vel_y;
-    obj.rotation = rotation;
-    obj.scale = scale;
+    // Find an inactive object in the pool
+    for (uint32_t i = 0; i < MAX_LOCAL_ENTITIES; ++i)
+    {
+        if (!gLocalEntities[i].isActive)  // Reuse an inactive slot
+        {
+            GameObject& obj = gLocalEntities[i];
+            obj.objectType = objectType;
+            obj.playerId = myPlayerId;
+            obj.pos_x = pos_x;
+            obj.pos_y = pos_y;
+            obj.vel_x = vel_x;
+            obj.vel_y = vel_y;
+            obj.rotation = rotation;
+            obj.scale = scale;
+            obj.isActive = true;  // Mark as active
+            return;
+        }
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -345,25 +348,25 @@ void RenderScoreboardText()
 
 
 #pragma region Cleaning/Destroying Objects
-void CleanupLocalEntities()
-{
-    std::lock_guard<std::mutex> lock(gPoolMutex);
-    uint32_t i = 0;
-    while (i < gLocalEntityCount.load())
-    {
-        if (!gLocalEntities[i].isActive)
-        {
-            // Swap with the last active element.
-            gLocalEntities[i] = gLocalEntities[gLocalEntityCount - 1];
-            gLocalEntityCount--;
-            // Do not increment i; process the swapped element.
-        }
-        else
-        {
-            ++i;
-        }
-    }
-}
+//void CleanupLocalEntities()
+//{
+//    std::lock_guard<std::mutex> lock(gPoolMutex);
+//    uint32_t i = 0;
+//    while (i < gLocalEntityCount.load())
+//    {
+//        if (!gLocalEntities[i].isActive)
+//        {
+//            // Swap with the last active element.
+//            gLocalEntities[i] = gLocalEntities[gLocalEntityCount - 1];
+//            gLocalEntityCount--;
+//            // Do not increment i; process the swapped element.
+//        }
+//        else
+//        {
+//            ++i;
+//        }
+//    }
+//}
 #pragma endregion
 
 #pragma region Update Logic
@@ -428,7 +431,7 @@ void UpdateLocalSimulation(float dt)
     // Update local entities (e.g., bullets) in the local pool.
     {
         std::lock_guard<std::mutex> lock(gPoolMutex);
-        for (uint32_t i = 0; i < gLocalEntityCount.load(); i++)
+        for (uint32_t i = 0; i < MAX_LOCAL_ENTITIES; i++)
         {
             gLocalEntities[i].pos_x += gLocalEntities[i].vel_x * dt;
             gLocalEntities[i].pos_y += gLocalEntities[i].vel_y * dt;
@@ -455,28 +458,37 @@ void HandleCollisionChecks()
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
 
-    for (uint32_t i = 0; i < gRemoteCount.load(); i++)
+    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
     {
+        // Only process if the slot is active.
+        if (!gServerEntityPool[i].isActive)
+            continue;
+
 #pragma region With Player
 #if 1
         if (checkSphereCollision(
             gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
             gLocalPlayer.pos_x, gLocalPlayer.pos_y, gLocalPlayer.scale * 0.5f))
         {
-            
+            // Handle player collision
         }
 #endif
 #pragma endregion
 
 #pragma region With Master Client Bullets
 #if 1
-        for (uint32_t j = 0; j < gLocalEntityCount.load(); j++)
+        for (uint32_t j = 0; j < MAX_LOCAL_ENTITIES; j++)
         {
+            // Only process if the slot is active.
+            if (!gLocalEntities[j].isActive)
+                continue;
+
             if (checkSphereCollision(
                 gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
                 gLocalEntities[j].pos_x, gLocalEntities[j].pos_y, gLocalEntities[j].scale * 0.5f))
             {
-                //gLocalEntities[j].isActive = false;
+                // Disable bullet on impact.
+                gLocalEntities[j].isActive = false;
             }
         }
 #endif
@@ -484,30 +496,36 @@ void HandleCollisionChecks()
 
 #pragma region With Each Other (different objs from server)
 #if 1
-        for (uint32_t j = 0; j < i + 1; j++)
+        for (uint32_t j = 0; j < i; j++) // Prevent self-collision by iterating only to i.
         {
+            if (!gServerEntityPool[j].isActive)
+                continue;
+
             if (checkSphereCollision(
                 gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
                 gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
             {
-
+                // Handle server object collision
             }
         }
 
-        // For fake bullets
-        for (uint32_t j = MAX_REMOTE_OBJECTS/2; j < MAX_REMOTE_OBJECTS / 2 + gBulletEntityCount.load(); j++)
+        // For fake bullets (assuming they occupy the second half of the pool)
+        for (uint32_t j = MAX_REMOTE_OBJECTS / 2; j < MAX_REMOTE_OBJECTS; j++)
         {
+            if (!gServerEntityPool[j].isActive)
+                continue;
+
             if (checkSphereCollision(
                 gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
                 gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
             {
-
+                // Handle fake bullet collision
             }
         }
-
 #endif
 #pragma endregion
     }
+
 }
 
 #pragma endregion
@@ -551,7 +569,13 @@ void ReceiveThread(SOCKET socket)
                 count = MAX_REMOTE_OBJECTS;
 
             std::lock_guard<std::mutex> lock(gPoolMutex);
-            uint32_t remoteIndex = 0;
+            // Mark entire remote pool as inactive first.
+            for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
+            {
+                gServerEntityPool[i].isActive = false;
+            }
+            // Fill pool with new updates.
+            uint32_t poolIndex = 0;
             for (uint32_t i = 0; i < count; i++)
             {
                 const GameObjectData& src = update->objects[i];
@@ -561,19 +585,21 @@ void ReceiveThread(SOCKET socket)
                 // Skip bullet updates from local player; local bullets are managed locally.
                 if (src.objectType == ObjectType::Bullet && src.playerId == myPlayerId)
                     continue;
+                if (poolIndex >= MAX_REMOTE_OBJECTS)
+                    break;
 
-                gServerEntityPool[remoteIndex].pos_x = src.pos_x;
-                gServerEntityPool[remoteIndex].pos_y = src.pos_y;
-                gServerEntityPool[remoteIndex].rotation = src.rotation;
-                gServerEntityPool[remoteIndex].scale = src.scale;
-                gServerEntityPool[remoteIndex].objectType = src.objectType;
-                gServerEntityPool[remoteIndex].playerId = src.playerId;
-                gServerEntityPool[remoteIndex].vel_x = src.vel_x;
-                gServerEntityPool[remoteIndex].vel_y = src.vel_y;
-                gServerEntityPool[remoteIndex].isActive = src.isActive;
-                remoteIndex++;
+                gServerEntityPool[poolIndex].pos_x = src.pos_x;
+                gServerEntityPool[poolIndex].pos_y = src.pos_y;
+                gServerEntityPool[poolIndex].rotation = src.rotation;
+                gServerEntityPool[poolIndex].scale = src.scale;
+                gServerEntityPool[poolIndex].objectType = src.objectType;
+                gServerEntityPool[poolIndex].playerId = src.playerId;
+                gServerEntityPool[poolIndex].vel_x = src.vel_x;
+                gServerEntityPool[poolIndex].vel_y = src.vel_y;
+                gServerEntityPool[poolIndex].isActive = src.isActive; // or simply true if update means active
+                poolIndex++;
             }
-            gRemoteCount.store(remoteIndex);
+            // (Optional) You can store poolIndex somewhere if needed.
         }
         // In your ReceiveThread function, add the BULLET_SPAWN case:
         else if (packetType == BULLET_SPAWN)
@@ -594,7 +620,8 @@ void ReceiveThread(SOCKET socket)
                     // Process each bullet in the multi-packet.
                     for (uint32_t i = 0; i < multiPkt->count; i++)
                     {
-                        if (multiPkt->bullets[i].playerId == myPlayerId) break; //avoid spawning on master client that has spawned this to begin with
+                        if (multiPkt->bullets[i].playerId == myPlayerId)
+                            break; // Avoid spawning on master client that has spawned this to begin with
 
                         // Calculate the bullet’s angle from its velocity.
                         float angle = atan2f(multiPkt->bullets[i].vel_y, multiPkt->bullets[i].vel_x);
@@ -609,10 +636,20 @@ void ReceiveThread(SOCKET socket)
                         bullet.vel_y = multiPkt->bullets[i].vel_y;
                         bullet.rotation = angle;
                         bullet.scale = 100.0f;          // Adjust scale as desired.
+                        bullet.isActive = true;         // Mark bullet as active.
 
-                        // Compute the insertion index in the global pool:
-                        int bulletIndex = (MAX_REMOTE_OBJECTS / 2) + gBulletEntityCount.fetch_add(1);
-                        if (bulletIndex < MAX_REMOTE_OBJECTS)
+                        // Search for an inactive bullet slot in the designated bullet region of gServerEntityPool.
+                        int bulletIndex = -1;
+                        for (int i = MAX_REMOTE_OBJECTS / 2; i < MAX_REMOTE_OBJECTS; i++)
+                        {
+                            if (!gServerEntityPool[i].isActive)
+                            {
+                                bulletIndex = i;
+                                break;
+                            }
+                        }
+
+                        if (bulletIndex != -1)
                         {
                             std::lock_guard<std::mutex> lock(gPoolMutex);
                             gServerEntityPool[bulletIndex] = bullet;
@@ -648,7 +685,6 @@ void ReceiveThread(SOCKET socket)
             for (const auto& pair : gScoreBoard) {
                 std::cout << "Player " << pair.first << ": " << pair.second << "\n";
             }
-
             std::cout << "=====================\n";
         }
     }
@@ -684,9 +720,12 @@ void SendLocalUpdate(int clientId)
     multiPkt.count = 0;
     {
         std::lock_guard<std::mutex> lock(gPoolMutex);
-        for (uint32_t i = 0; i < gLocalEntityCount.load() && multiPkt.count < 10; i++)
+        // Loop through the entire local entity pool.
+        for (uint32_t i = 0; i < MAX_LOCAL_ENTITIES && multiPkt.count < 10; i++)
         {
-            if (gLocalEntities[i].objectType == ObjectType::Bullet && !gLocalEntities[i].isSent)
+            if (gLocalEntities[i].objectType == ObjectType::Bullet &&
+                gLocalEntities[i].isActive &&
+                !gLocalEntities[i].isSent)
             {
                 // Prepare the bullet spawn data.
                 multiPkt.bullets[multiPkt.count].playerId = myPlayerId;
@@ -732,8 +771,8 @@ void UpdateRemoteInterpolation(float dt)
     const float extrapolationFactor = 1.0f; // Predict 1 second ahead.
 
     std::lock_guard<std::mutex> lock(gPoolMutex);
-    uint32_t remoteCount = gRemoteCount.load();
-    for (uint32_t i = 0; i < remoteCount; i++)
+    // Process non-bullet remote objects (assumed in first half of pool).
+    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
     {
         if (!gRemoteEntities[i].isActive) continue;
 
@@ -762,12 +801,11 @@ void UpdateRemoteInterpolation(float dt)
         gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
     }
 
-    // Update bullets by simply adding velocity to position.
+    // Update bullet objects by simply adding velocity to position.
     int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
-    int bulletCount = gBulletEntityCount.load();
-
-    for (int i = bulletStartIndex; i < bulletStartIndex + bulletCount; i++)
+    for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
     {
+        if (!gServerEntityPool[i].isActive) continue;
         gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x * dt;
         gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y * dt;
     }
@@ -794,9 +832,11 @@ void Render()
     }
 
     // Render local entities (bullets, etc.).
-    uint32_t localCount = gLocalEntityCount.load();
-    for (uint32_t i = 0; i < localCount; i++)
+    for (uint32_t i = 0; i < MAX_LOCAL_ENTITIES; i++)
     {
+        if (!gLocalEntities[i].isActive)
+            continue;
+
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gLocalEntities[i].scale, gLocalEntities[i].scale);
         AEMtx33Rot(&rotMtx, gLocalEntities[i].rotation + (3.1415926f / 2.0f));
@@ -804,20 +844,25 @@ void Render()
         AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
 
+#pragma region Texture Selection for Local Entities
+#if 1
         // Choose texture based on object type.
         if (gLocalEntities[i].objectType == ObjectType::Bullet) // Bullet.
             AEGfxTextureSet(BulletTexture, 0, 0);
         else
             AEGfxTextureSet(AsteroidTexture, 0, 0); // Or any other texture for other entity types.
+#endif
+#pragma endregion
+
         AEGfxSetTransform(finalMtx.m);
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
 
-    // Render remote entities.
-    uint32_t remoteCount = gRemoteCount.load();
-    for (uint32_t i = 0; i < remoteCount; i++)
+    // Render remote entities (non-bullets) from first half of remote pool.
+    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
     {
-        if (!gRemoteEntities[i].isActive) continue;
+        if (!gRemoteEntities[i].isActive)
+            continue;
 
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gRemoteEntities[i].scale, gRemoteEntities[i].scale);
@@ -844,9 +889,11 @@ void Render()
 
     // Render bullet entities from the global pool (second half).
     int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
-    int bulletCount = gBulletEntityCount.load();
-    for (int i = bulletStartIndex; i < bulletStartIndex + bulletCount; i++)
+    for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
     {
+        if (!gServerEntityPool[i].isActive)
+            continue;
+
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gServerEntityPool[i].scale, gServerEntityPool[i].scale);
         AEMtx33Rot(&rotMtx, gServerEntityPool[i].rotation + (3.1415926f / 2.0f));
@@ -983,8 +1030,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         HandleCollisionChecks();
         // Render local and remote entities.
         Render();
-
-        CleanupLocalEntities();
 
         AESysFrameEnd();
         if (AEInputCheckTriggered(AEVK_ESCAPE) || !AESysDoesWindowExist())
