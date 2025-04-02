@@ -211,15 +211,46 @@ SOCKET g_serverSocket = INVALID_SOCKET;
 #pragma region Spawning/Relaying Entities
 void spawnAsteroid()
 {
-    AsteroidEntity asteroid;
-    asteroid.pos_x = static_cast<float>(rand() % 800);
-    asteroid.pos_y = static_cast<float>(rand() % 600);
+    AsteroidEntity asteroid{};
+
+    float windowWidth = 1600.0f;
+    float windowHeight = 900.0f;
+
+    float halfWidth = windowWidth / 2.0f;
+    float halfHeight = windowHeight / 2.0f;
+
+    float edgeBuffer = 50.0f;
     asteroid.scale = static_cast<float>(rand() % 40 + 30);
-    asteroid.rotation = (static_cast<float>(rand()) / RAND_MAX) * 2.0f * 3.1415926f;
+    asteroid.health = 100;
+
+    // Pick a random edge to spawn from
+    int edge = rand() % 4;
+
+    switch (edge)
+    {
+    case 0: // Left
+        asteroid.pos_x = -halfWidth - edgeBuffer;
+        asteroid.pos_y = -halfHeight + static_cast<float>(rand()) / RAND_MAX * windowHeight;
+        break;
+    case 1: // Right
+        asteroid.pos_x = halfWidth + edgeBuffer;
+        asteroid.pos_y = -halfHeight + static_cast<float>(rand()) / RAND_MAX * windowHeight;
+        break;
+    case 2: // Top
+        asteroid.pos_y = halfHeight + edgeBuffer;
+        asteroid.pos_x = -halfWidth + static_cast<float>(rand()) / RAND_MAX * windowWidth;
+        break;
+    case 3: // Bottom
+        asteroid.pos_y = -halfHeight - edgeBuffer;
+        asteroid.pos_x = -halfWidth + static_cast<float>(rand()) / RAND_MAX * windowWidth;
+        break;
+    }
+
+    // Assign random angle and velocity
+    asteroid.rotation = static_cast<float>(rand()) / RAND_MAX * 2.0f * 3.1415926f;
     float speed = 50.0f + static_cast<float>(rand() % 50);
     asteroid.vel_x = cosf(asteroid.rotation) * speed;
     asteroid.vel_y = sinf(asteroid.rotation) * speed;
-    asteroid.health = 100;
 
     std::lock_guard<std::mutex> lock(gameStateMutex);
     asteroids.push_back(asteroid);
