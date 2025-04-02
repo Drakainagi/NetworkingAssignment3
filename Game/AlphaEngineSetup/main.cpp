@@ -28,6 +28,7 @@
 #include <cmath>
 #include <mutex>
 #include <map>
+#include <algorithm>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -304,20 +305,43 @@ void UpdateLocalSimulation(float dt)
         playerPosY += windowHeight + playerRenderScale * 2;
     else if (playerPosY > windowHeight / 2 + playerRenderScale)
         playerPosY -= windowHeight + playerRenderScale * 2;
-
-    //Text rendering
-            // Text display for lose
-    std::string Str = "Your Score: " + std::to_string(10);
-
-    const char* WinTxt = Str.c_str();
-    AEGfxGetPrintSize(pFont, WinTxt, 1.f, &w, &h);
-    AEGfxPrint(pFont, WinTxt, -w / 2, -h / 2 + 0.2f, 1, 1, 1, 1, 1);
-
-    Str = "Press R to try again!";
-    WinTxt = Str.c_str();
-    AEGfxGetPrintSize(pFont, WinTxt, 1.f, &w, &h);
-    AEGfxPrint(pFont, WinTxt, -w / 2, (-h / 2) - 0.3f, 1, 1, 1, 1, 1);
 }
+
+void RenderScoreboardText()
+{
+    std::lock_guard<std::mutex> lock(gScoreMutex);
+
+    // Convert map to vector for sorting
+    std::vector<std::pair<uint32_t, uint32_t>> scores(gScoreBoard.begin(), gScoreBoard.end());
+
+    // Sort descending by score
+    std::sort(scores.begin(), scores.end(), [](const auto& a, const auto& b) {
+        return a.second > b.second;
+        });
+
+    // Render top 5
+    float startY = 1.0f; // Top of screen
+    float spacing = 0.05f;
+    int rank = 1;
+
+    for (const auto& entry : scores)
+    {
+        if (rank > 5) break;
+
+        uint32_t id = entry.first;
+        uint32_t score = entry.second;
+
+        std::string line = "P" + std::to_string(id) + ": " + std::to_string(score);
+        const char* txt = line.c_str();
+        f32 w = 1, h = 1;
+        AEGfxGetPrintSize(pFont, txt, 0.5f, &w, &h);
+        AEGfxPrint(pFont, txt, 1.0f - w + 0.3f, startY - h - rank * spacing, 0.5f, 1, 1, 1, 1);
+
+        ++rank;
+    }
+
+}
+
 
 // ----------------------------------------------------------------------
 // SendPlayerUpdate()
@@ -373,6 +397,8 @@ void Render()
         AEGfxSetTransform(finalMtx.m);
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
+
+    RenderScoreboardText();
 }
 
 // ----------------------------------------------------------------------
@@ -452,6 +478,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AsteroidTexture = AEGfxTextureLoad("Assets/PlanetTexture.png");
     PlayerTexture = AEGfxTextureLoad("Assets/Player.png");
     BulletTexture = AEGfxTextureLoad("Assets/Fire.png");
+    pFont = AEGfxCreateFont("Assets/liberation-mono.ttf", 72); // load in font
 
     bool gGameRunning = true;
     while (gGameRunning) {

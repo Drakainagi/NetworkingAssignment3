@@ -113,10 +113,11 @@ struct PlayerScore {
 };
 
 struct ScoreUpdatePacket {
-    uint8_t type;
+    uint8_t type = SCORE_UPDATE;
     uint32_t scoreCount;
     PlayerScore scores[MAX_PLAYERS];
 };
+
 #pragma pack(pop)
 
 //---------------------------------------------------------------------------------
@@ -314,29 +315,58 @@ void broadcastGameState()
 
 void broadcastScoreUpdate()
 {
-    ScoreUpdatePacket pkt;
-    pkt.type = SCORE_UPDATE;
+    std::vector<PlayerScore> scoreEntries;
 
-    int i = 0;
-    for (const auto& [id, score] : gScoreBoard) {
-        if (i >= MAX_PLAYERS) break;  // prevent out-of-bounds write
-        pkt.scores[i].playerId = id;
-        pkt.scores[i].score = score;
-        ++i;
+    {
+        std::lock_guard<std::mutex> lock(gScoreMutex);
+        for (const auto& [id, score] : gScoreBoard) {
+            PlayerScore entry;
+            entry.playerId = id;
+            entry.score = score;
+            scoreEntries.push_back(entry);
+        }
     }
-    pkt.scoreCount = i;
+
+    // Prepare header
+    uint8_t packetType = SCORE_UPDATE;
+    uint32_t scoreCount = static_cast<uint32_t>(scoreEntries.size());
+
+    size_t headerSize = sizeof(packetType) + sizeof(scoreCount);
+    size_t scoresSize = scoreEntries.size() * sizeof(PlayerScore);
+    size_t totalPacketSize = headerSize + scoresSize;
+
+    // Create buffer
+    std::vector<char> buffer(totalPacketSize);
+
+    // Copy header
+    memcpy(buffer.data(), &packetType, sizeof(packetType));
+    memcpy(buffer.data() + sizeof(packetType), &scoreCount, sizeof(scoreCount));
+
+    // Copy score entries
+    if (!scoreEntries.empty())
+    {
+        memcpy(buffer.data() + headerSize, scoreEntries.data(), scoresSize);
+    }
 
     std::lock_guard<std::mutex> clientsLock(clientsMutex);
     for (const auto& addr : clientAddresses)
     {
-
-        std::cout << "[BROADCAST] Sending SCORE_UPDATE with " << pkt.scoreCount << " entries\n";
-        for (int j = 0; j < pkt.scoreCount; ++j) {
-            std::cout << "  -> Player " << pkt.scores[j].playerId << " = " << pkt.scores[j].score << "\n";
+        std::cout << "[BROADCAST] Sending SCORE_UPDATE with " << scoreCount << " entries\n";
+        for (const auto& entry : scoreEntries)
+        {
+            std::cout << "  -> Player " << entry.playerId << " = " << entry.score << "\n";
         }
 
-        sendto(g_serverSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
-            reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+        int bytesSent = sendto(g_serverSocket,
+            buffer.data(),
+            static_cast<int>(totalPacketSize),
+            0,
+            reinterpret_cast<const sockaddr*>(&addr),
+            sizeof(addr));
+
+        if (bytesSent == SOCKET_ERROR) {
+            std::cerr << "[ERROR] SCORE_UPDATE sendto failed: " << WSAGetLastError() << std::endl;
+        }
     }
 }
 
@@ -440,7 +470,7 @@ void serverReceiveLoop(SOCKET serverSocket)
         {
             ScoreIncrementPacket* scorePkt = reinterpret_cast<ScoreIncrementPacket*>(buffer);
 
-            std::lock_guard<std::mutex> lock(gScoreMutex);
+          
             gScoreBoard[scorePkt->playerId] += scorePkt->increment;
 
             std::cout << "[SCORE] Player " << scorePkt->playerId
