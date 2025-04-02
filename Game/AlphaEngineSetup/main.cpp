@@ -27,14 +27,15 @@
 #include <mutex>
 #include <map>
 #include <algorithm>
+#include <string>
 
 #pragma comment(lib, "ws2_32.lib")
 
  // Constants
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
-constexpr int BUFFER_SIZE = 1024;
-constexpr int MAX_REMOTE_OBJECTS = 300;  // Objects coming from the server. // Anything above 300 is considered as cached or fake entities that server does not know, hence the mismatch
+constexpr int BUFFER_SIZE = 4096;
+constexpr int MAX_REMOTE_OBJECTS = 256;  // Objects coming from the server. // Anything above 256 is considered as cached or fake entities that server does not know, hence the mismatch
 constexpr int MAX_LOCAL_ENTITIES = 100;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
 constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
@@ -68,9 +69,11 @@ enum PacketType : uint8_t
     ACK = 0x05,
     BULLET_SPAWN = 0x06,  // New packet type for bullet spawning.
     // Score packets
-    SCORE_INCREMENT = 0x07,
-    SCORE_UPDATE = 0x08,
-    FINAL_SCOREBOARD = 0x09
+    DISCONNECT = 0x07,
+    NAME_REJECTED = 0x08,  // ✅ new packet type
+    SCORE_INCREMENT = 0x09,
+    SCORE_UPDATE = 0x10,
+    FINAL_SCOREBOARD = 0x11
 };
 
 #pragma pack(push, 1)
@@ -78,6 +81,7 @@ enum PacketType : uint8_t
 // Packet for join request.
 struct JoinRequestPacket {
     uint8_t type = JOIN_REQUEST;
+    char name[32];  // Max 31 characters + null terminator
 };
 
 // Packet for join acceptance.
@@ -687,6 +691,13 @@ void ReceiveThread(SOCKET socket)
             }
             std::cout << "=====================\n";
         }
+        if (packetType == NAME_REJECTED) 
+        {
+            std::cout << "[SERVER] Name already taken. Please restart and try a different name.\n";
+            running = false; // Optional: stop game loop
+            gGameRunning = false;
+            continue;
+        }
     }
 }
 
@@ -953,16 +964,16 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         return 1;
     }
 
-    int clientId = 0;
-    std::cout << "Enter client ID (1-4): ";
-    std::cin >> clientId;
-    if (clientId < 1 || clientId > 4)
-        clientId = 1;
+    std::string userName;
+    std::cout << "Enter your name: ";
+    std::getline(std::cin, userName);
+
 
     sockaddr_in clientAddr{};
     clientAddr.sin_family = AF_INET;
     clientAddr.sin_addr.s_addr = INADDR_ANY;
-    clientAddr.sin_port = htons(CLIENT_PORT_START + clientId - 1);
+    clientAddr.sin_port = 0; // ✅ No more clientId usage
+
     if (bind(udpSocket, reinterpret_cast<sockaddr*>(&clientAddr), sizeof(clientAddr)) == SOCKET_ERROR)
     {
         std::cerr << "[ERROR] Bind failed." << std::endl;
@@ -987,6 +998,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
     // Send join request.
     JoinRequestPacket joinReq{};
+    strcpy_s(joinReq.name, sizeof(joinReq.name), userName.c_str());
     sendto(udpSocket, reinterpret_cast<char*>(&joinReq), sizeof(joinReq), 0,
         reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
 
@@ -1009,7 +1021,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     BulletTexture = AEGfxTextureLoad("Assets/Fire.png");
     pFont = AEGfxCreateFont("Assets/liberation-mono.ttf", 72); // load in font
 
-    bool gGameRunning = true;
+    gGameRunning = true;
     while (gGameRunning)
     {
         AESysFrameStart();
@@ -1024,7 +1036,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
         // Update local simulation (local player and local entities).
         UpdateLocalSimulation(dt);
-        SendLocalUpdate(clientId);
+        SendLocalUpdate(myPlayerId);
         // Interpolate remote entities.
         UpdateRemoteInterpolation(dt);
         HandleCollisionChecks();
@@ -1047,6 +1059,15 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     running = false;
     if (recvThread.joinable())
         recvThread.join();
+
+    if (myPlayerId != 0) {
+        uint8_t disconnectMsg[5];
+        disconnectMsg[0] = DISCONNECT;
+        uint32_t netId = htonl(myPlayerId);
+        memcpy(&disconnectMsg[1], &netId, sizeof(uint32_t));
+        sendto(udpSocket, reinterpret_cast<char*>(disconnectMsg), 5, 0,
+            (sockaddr*)&serverAddr, sizeof(serverAddr));
+    }
 
     closesocket(udpSocket);
     WSACleanup();
