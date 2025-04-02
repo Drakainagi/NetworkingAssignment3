@@ -22,7 +22,7 @@
 #include <atomic>
 #include <conio.h>
 #include <vector>
-#include <cstring>
+#include <string>
 #include <cmath>
 #include <mutex>
 #include <map>
@@ -47,6 +47,14 @@ constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
 inline float Lerp(float a, float b, float t)
 {
     return a + (b - a) * t;
+}
+
+// ----------------------------------------------------------------------
+// Helper: Collision Check (Sphere to sphere) function
+// ----------------------------------------------------------------------
+bool checkSphereCollision(float x1, float y1, float r1, float x2, float y2, float r2) 
+{
+    return (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) <= (r1 + r2) * (r1 + r2);
 }
 #pragma endregion
 
@@ -119,6 +127,8 @@ struct GameObjectData {
     float scale;
     float vel_x;      // Velocity X component.
     float vel_y;      // Velocity Y component.
+
+    bool isActive = true;
 };
 
 struct GameUpdatePacket {
@@ -176,6 +186,7 @@ struct GameObject
     uint32_t playerId = 0;  // Valid for player objects.
 
     bool isSent = false;
+    bool isActive = true;
 };
 
 enum ObjectType 
@@ -190,11 +201,11 @@ GameObject gRemoteEntities[MAX_REMOTE_OBJECTS];
 GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server. 
 std::atomic<uint32_t> gRemoteCount{ 0 };
 std::atomic<uint32_t> gBulletEntityCount{ 0 };
+std::atomic<uint32_t> gLocalEntityCount{ 0 };
 
 // Local pool: stores local player and other local spawned objects.
 GameObject gLocalPlayer; // Local player object.
 GameObject gLocalEntities[MAX_LOCAL_ENTITIES];
-uint32_t gLocalEntityCount = 0;
 
 // Mutex for synchronizing access to both pools.
 std::mutex gPoolMutex;
@@ -226,7 +237,7 @@ s8	pFont;
 void SpawnLocalEntity(uint8_t objectType, float pos_x, float pos_y, float vel_x, float vel_y, float rotation, float scale)
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
-    if (gLocalEntityCount >= MAX_LOCAL_ENTITIES)
+    if (gLocalEntityCount.load() >= MAX_LOCAL_ENTITIES)
         return; // Pool full.
 
     GameObject& obj = gLocalEntities[gLocalEntityCount++];
@@ -270,7 +281,6 @@ void SpawnBullet()
 #pragma endregion
 
 #pragma region Score Logic
-
 // ----------------------------------------------------------------------
 //  Score Increment Function
 // ----------------------------------------------------------------------
@@ -331,9 +341,31 @@ void RenderScoreboardText()
 
 
 }
+#pragma endregion
 
 
-#pragma end
+#pragma region Cleaning/Destroying Objects
+void CleanupLocalEntities()
+{
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+    uint32_t i = 0;
+    while (i < gLocalEntityCount.load())
+    {
+        if (!gLocalEntities[i].isActive)
+        {
+            // Swap with the last active element.
+            gLocalEntities[i] = gLocalEntities[gLocalEntityCount - 1];
+            gLocalEntityCount--;
+            // Do not increment i; process the swapped element.
+        }
+        else
+        {
+            ++i;
+        }
+    }
+}
+#pragma endregion
+
 #pragma region Update Logic
 // ----------------------------------------------------------------------
 // UpdateLocalSimulation: Updates local simulation (player and local entities).
@@ -396,7 +428,7 @@ void UpdateLocalSimulation(float dt)
     // Update local entities (e.g., bullets) in the local pool.
     {
         std::lock_guard<std::mutex> lock(gPoolMutex);
-        for (uint32_t i = 0; i < gLocalEntityCount; i++)
+        for (uint32_t i = 0; i < gLocalEntityCount.load(); i++)
         {
             gLocalEntities[i].pos_x += gLocalEntities[i].vel_x * dt;
             gLocalEntities[i].pos_y += gLocalEntities[i].vel_y * dt;
@@ -415,6 +447,69 @@ void UpdateLocalSimulation(float dt)
     }
     // Here you could add more input-handling for other local-spawnable entities.
 }
+
+// ----------------------------------------------------------------------
+// Handle Collision Logic
+// ----------------------------------------------------------------------
+void HandleCollisionChecks()
+{
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+
+    for (uint32_t i = 0; i < gRemoteCount.load(); i++)
+    {
+#pragma region With Player
+#if 1
+        if (checkSphereCollision(
+            gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+            gLocalPlayer.pos_x, gLocalPlayer.pos_y, gLocalPlayer.scale * 0.5f))
+        {
+            
+        }
+#endif
+#pragma endregion
+
+#pragma region With Master Client Bullets
+#if 1
+        for (uint32_t j = 0; j < gLocalEntityCount.load(); j++)
+        {
+            if (checkSphereCollision(
+                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+                gLocalEntities[j].pos_x, gLocalEntities[j].pos_y, gLocalEntities[j].scale * 0.5f))
+            {
+                //gLocalEntities[j].isActive = false;
+            }
+        }
+#endif
+#pragma endregion
+
+#pragma region With Each Other (different objs from server)
+#if 1
+        for (uint32_t j = 0; j < i + 1; j++)
+        {
+            if (checkSphereCollision(
+                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+                gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
+            {
+
+            }
+        }
+
+        // For fake bullets
+        for (uint32_t j = MAX_REMOTE_OBJECTS/2; j < MAX_REMOTE_OBJECTS / 2 + gBulletEntityCount.load(); j++)
+        {
+            if (checkSphereCollision(
+                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+                gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
+            {
+
+            }
+        }
+
+#endif
+#pragma endregion
+    }
+}
+
 #pragma endregion
 
 #pragma region Client Interaction
@@ -475,6 +570,7 @@ void ReceiveThread(SOCKET socket)
                 gServerEntityPool[remoteIndex].playerId = src.playerId;
                 gServerEntityPool[remoteIndex].vel_x = src.vel_x;
                 gServerEntityPool[remoteIndex].vel_y = src.vel_y;
+                gServerEntityPool[remoteIndex].isActive = src.isActive;
                 remoteIndex++;
             }
             gRemoteCount.store(remoteIndex);
@@ -588,7 +684,7 @@ void SendLocalUpdate(int clientId)
     multiPkt.count = 0;
     {
         std::lock_guard<std::mutex> lock(gPoolMutex);
-        for (uint32_t i = 0; i < gLocalEntityCount && multiPkt.count < 10; i++)
+        for (uint32_t i = 0; i < gLocalEntityCount.load() && multiPkt.count < 10; i++)
         {
             if (gLocalEntities[i].objectType == ObjectType::Bullet && !gLocalEntities[i].isSent)
             {
@@ -639,6 +735,8 @@ void UpdateRemoteInterpolation(float dt)
     uint32_t remoteCount = gRemoteCount.load();
     for (uint32_t i = 0; i < remoteCount; i++)
     {
+        if (!gRemoteEntities[i].isActive) continue;
+
         float targetPosX = gServerEntityPool[i].pos_x + gServerEntityPool[i].vel_x * extrapolationFactor;
         float targetPosY = gServerEntityPool[i].pos_y + gServerEntityPool[i].vel_y * extrapolationFactor;
         float targetRot = gServerEntityPool[i].rotation;
@@ -696,7 +794,8 @@ void Render()
     }
 
     // Render local entities (bullets, etc.).
-    for (uint32_t i = 0; i < gLocalEntityCount; i++)
+    uint32_t localCount = gLocalEntityCount.load();
+    for (uint32_t i = 0; i < localCount; i++)
     {
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gLocalEntities[i].scale, gLocalEntities[i].scale);
@@ -718,6 +817,8 @@ void Render()
     uint32_t remoteCount = gRemoteCount.load();
     for (uint32_t i = 0; i < remoteCount; i++)
     {
+        if (!gRemoteEntities[i].isActive) continue;
+
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gRemoteEntities[i].scale, gRemoteEntities[i].scale);
         AEMtx33Rot(&rotMtx, gRemoteEntities[i].rotation + (3.1415926f / 2.0f));
@@ -879,8 +980,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         SendLocalUpdate(clientId);
         // Interpolate remote entities.
         UpdateRemoteInterpolation(dt);
+        HandleCollisionChecks();
         // Render local and remote entities.
         Render();
+
+        CleanupLocalEntities();
 
         AESysFrameEnd();
         if (AEInputCheckTriggered(AEVK_ESCAPE) || !AESysDoesWindowExist())
