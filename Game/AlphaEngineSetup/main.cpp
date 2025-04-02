@@ -918,7 +918,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 
     std::string userName;
-    std::cout << "Enter your name: ";
+    std::cout << "Enter Player's Name (Max. 31 Characters): ";
     std::getline(std::cin, userName);
 
 
