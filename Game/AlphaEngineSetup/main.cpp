@@ -39,6 +39,7 @@ constexpr int MAX_REMOTE_BULLETS = 3000;    // Maximum number of bullet entities
 constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
 constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
+constexpr int VICTORY_SCORE = 50; // Client based intended
 
 #pragma region Helper Func
  // ----------------------------------------------------------------------
@@ -161,6 +162,14 @@ sockaddr_in serverAddr{};
 std::map<uint32_t, uint32_t> gScoreBoard;
 std::mutex gScoreMutex;
 
+// Game State 
+enum GameState {
+    Playing,
+    Pause,
+    Win
+};
+
+GameState gameState = Playing; // Defaults allows simulation, etc
 
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
@@ -291,14 +300,8 @@ void ReportScoreUpdate(uint32_t playerId, uint32_t points)
 // ----------------------------------------------------------------------
 //  Scoreboard render function
 // ----------------------------------------------------------------------
-void RenderScoreboardText()
+void RenderScoreboardText(int Location = 0)
 {
-    // Header
-    const char* headerText = "Scoreboard";
-    f32 w = 1.0f, h = 1.0f;
-    AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
-    AEGfxPrint(pFont, headerText, 1.0f - w - 0.05f, 1.0f - h - 0.05f, 0.5f, 1, 1, 1, 1);
-
     // Lock and copy the current scoreboard
     std::vector<std::pair<uint32_t, uint32_t>> sortedScores;
     {
@@ -311,6 +314,18 @@ void RenderScoreboardText()
         [](const auto& a, const auto& b) {
             return a.second > b.second;
         });
+
+    // Header
+    const char* headerText = "Scoreboard";
+    f32 w = 1.0f, h = 1.0f;
+    AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
+
+    // Center Y for win screen display
+    float centerYOffset = 0.1f; // Manual adjust
+    float baseX = (Location == 1) ? -w / 2.0f : 1.0f - w - 0.05f;
+    float baseY = (Location == 1) ? centerYOffset : 1.0f - h - 0.05f;
+
+    AEGfxPrint(pFont, headerText, baseX, baseY, 0.5f, 1, 1, 1, 1);
 
     // Render top N players
     const int maxEntries = 6;
@@ -326,14 +341,16 @@ void RenderScoreboardText()
         f32 lineW = 1.0f, lineH = 1.0f;
         AEGfxGetPrintSize(pFont, txt, 0.5f, &lineW, &lineH);
 
-        AEGfxPrint(pFont, txt, 1.0f - lineW - 0.05f, 1.0f - lineH - 0.05f - ((i + 1) * 0.07f), 0.5f, 1, 1, 1, 1);
+        float textX = (Location == 1) ? -lineW / 2.0f : 1.0f - lineW - 0.05f;
+        float textY = baseY - ((i + 1) * 0.07f);
+
+        AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1, 1, 1, 1);
     }
-
-
 }
 
 
-#pragma end
+
+#pragma endregion
 #pragma region Update Logic
 // ----------------------------------------------------------------------
 // UpdateLocalSimulation: Updates local simulation (player and local entities).
@@ -541,19 +558,22 @@ void ReceiveThread(SOCKET socket)
         else if (packetType == SCORE_UPDATE)
         {
             ScoreUpdatePacket* pkt = reinterpret_cast<ScoreUpdatePacket*>(buffer);
+
             std::lock_guard<std::mutex> lock(gScoreMutex);
             gScoreBoard.clear();
+
+            uint32_t highestScore = 0;
             for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
                 gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
+                if (pkt->scores[i].score > highestScore)
+                    highestScore = pkt->scores[i].score;
             }
 
-            // Optional: Console debug display
-            std::cout << "\n== LIVE SCOREBOARD ==\n";
-            for (const auto& pair : gScoreBoard) {
-                std::cout << "Player " << pair.first << ": " << pair.second << "\n";
+            // Win condition check (e.g., 500 points)
+            if (highestScore >= VICTORY_SCORE && gameState == GameState::Playing) {
+                gameState = GameState::Win;
+                std::cout << "[GAME STATE] Game over! A player has reached 500 points.\n";
             }
-
-            std::cout << "=====================\n";
         }
     }
 }
@@ -760,6 +780,17 @@ void Render()
     }
     RenderScoreboardText();
 }
+
+
+// ----------------------------------------------------------------------
+// Render: Renders local player, local entities, and remote entities.
+// ----------------------------------------------------------------------
+void RenderWinScreen()
+{
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+
+    RenderScoreboardText(1); // 1 Renders to middle, 0 renders top right for in-game
+}
 #pragma endregion
 
 #pragma region DO NOT TOUCH
@@ -874,13 +905,22 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
         float dt = static_cast<float>(AEFrameRateControllerGetFrameTime());
 
-        // Update local simulation (local player and local entities).
-        UpdateLocalSimulation(dt);
-        SendLocalUpdate(clientId);
-        // Interpolate remote entities.
-        UpdateRemoteInterpolation(dt);
-        // Render local and remote entities.
-        Render();
+        switch (gameState)
+        {
+        case GameState::Playing:
+            UpdateLocalSimulation(dt);
+            SendLocalUpdate(clientId);
+            UpdateRemoteInterpolation(dt);
+            Render();
+            break;
+
+        case GameState::Win:
+            RenderWinScreen();
+            break;
+
+        default:
+            break;
+        }
 
         AESysFrameEnd();
         if (AEInputCheckTriggered(AEVK_ESCAPE) || !AESysDoesWindowExist())
