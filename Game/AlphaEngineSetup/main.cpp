@@ -33,10 +33,22 @@ constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 1024;
 constexpr int MAX_REMOTE_OBJECTS = 4000;  // Objects coming from the server.
-constexpr int MAX_LOCAL_ENTITIES = 100;     // Local pool for bullets, power-ups, etc.
+constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
 
+#pragma region Helper Func
+ // ----------------------------------------------------------------------
+ // Helper: Linear Interpolation Function
+ // ----------------------------------------------------------------------
+inline float Lerp(float a, float b, float t)
+{
+    return a + (b - a) * t;
+}
+#pragma endregion
+
+#pragma region Packets Declaration
 // Packet types (must match server definitions)
-enum PacketType : uint8_t {
+enum PacketType : uint8_t
+{
     JOIN_REQUEST = 0x01,
     JOIN_ACCEPT = 0x02,
     GAME_UPDATE = 0x03,
@@ -100,6 +112,9 @@ struct GameUpdatePacket {
 };
 
 #pragma pack(pop)
+#pragma endregion
+
+#pragma region VARIABLES DECLARATION
 
 // ----------------------------------------------------------------------
 // Global Networking Variables
@@ -152,117 +167,9 @@ AEGfxTexture* AsteroidTexture = nullptr;
 AEGfxTexture* PlayerTexture = nullptr;
 AEGfxTexture* BulletTexture = nullptr;
 
-// ----------------------------------------------------------------------
-// Helper: Linear Interpolation Function
-// ----------------------------------------------------------------------
-inline float Lerp(float a, float b, float t)
-{
-    return a + (b - a) * t;
-}
+#pragma endregion
 
-// ----------------------------------------------------------------------
-// Receive Thread: Processes JOIN_ACCEPT, GAME_UPDATE packets.
-// ----------------------------------------------------------------------
-void ReceiveThread(SOCKET socket)
-{
-    char buffer[BUFFER_SIZE];
-    sockaddr_in fromAddr{};
-    int fromLen = sizeof(fromAddr);
-    while (running)
-    {
-        int bytesReceived = recvfrom(socket, buffer, BUFFER_SIZE, 0,
-            reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
-        if (bytesReceived == SOCKET_ERROR)
-        {
-            int err = WSAGetLastError();
-            if (err == WSAEWOULDBLOCK)
-                continue;
-            std::cerr << "[ERROR] recvfrom failed: " << err << std::endl;
-            continue;
-        }
-        if (bytesReceived <= 0)
-            continue;
-
-        uint8_t packetType = static_cast<uint8_t>(buffer[0]);
-        if (packetType == JOIN_ACCEPT)
-        {
-            JoinAcceptPacket* pkt = reinterpret_cast<JoinAcceptPacket*>(buffer);
-            myPlayerId = pkt->playerId;
-            std::cout << "[JOINED] Assigned Player ID: " << myPlayerId << std::endl;
-        }
-        else if (packetType == GAME_UPDATE)
-        {
-            GameUpdatePacket* update = reinterpret_cast<GameUpdatePacket*>(buffer);
-            uint32_t count = update->objectCount;
-            if (count > MAX_REMOTE_OBJECTS)
-                count = MAX_REMOTE_OBJECTS;
-
-            std::lock_guard<std::mutex> lock(gPoolMutex);
-            uint32_t remoteIndex = 0;
-            for (uint32_t i = 0; i < count; i++)
-            {
-                const GameObjectData& src = update->objects[i];
-                // Skip local player's update.
-                if (src.objectType == 0 && src.playerId == myPlayerId)
-                    continue;
-                // Skip bullet updates from local player; local bullets are managed locally.
-                if (src.objectType == 2 && src.playerId == myPlayerId)
-                    continue;
-
-                gServerEntityPool[remoteIndex].pos_x = src.pos_x;
-                gServerEntityPool[remoteIndex].pos_y = src.pos_y;
-                gServerEntityPool[remoteIndex].rotation = src.rotation;
-                gServerEntityPool[remoteIndex].scale = src.scale;
-                gServerEntityPool[remoteIndex].objectType = src.objectType;
-                gServerEntityPool[remoteIndex].playerId = src.playerId;
-                gServerEntityPool[remoteIndex].vel_x = src.vel_x;
-                gServerEntityPool[remoteIndex].vel_y = src.vel_y;
-                remoteIndex++;
-            }
-            gRemoteCount.store(remoteIndex);
-        }
-    }
-}
-
-// ----------------------------------------------------------------------
-// UpdateRemoteInterpolation: Interpolates remote objects based on server data.
-// ----------------------------------------------------------------------
-void UpdateRemoteInterpolation(float dt)
-{
-    const float lerpFactor = 0.1f;
-    const float posThreshold = 50.0f;
-    const float extrapolationFactor = 1.0f; // Predict 1 second ahead.
-
-    std::lock_guard<std::mutex> lock(gPoolMutex);
-    uint32_t remoteCount = gRemoteCount.load();
-    for (uint32_t i = 0; i < remoteCount; i++)
-    {
-        float targetPosX = gServerEntityPool[i].pos_x + gServerEntityPool[i].vel_x * extrapolationFactor;
-        float targetPosY = gServerEntityPool[i].pos_y + gServerEntityPool[i].vel_y * extrapolationFactor;
-        float targetRot = gServerEntityPool[i].rotation;
-        float targetScale = gServerEntityPool[i].scale;
-
-        float diffX = fabs(targetPosX - gRemoteEntities[i].pos_x);
-        if (diffX > posThreshold)
-            gRemoteEntities[i].pos_x = targetPosX;
-        else
-            gRemoteEntities[i].pos_x = Lerp(gRemoteEntities[i].pos_x, targetPosX, lerpFactor);
-
-        float diffY = fabs(targetPosY - gRemoteEntities[i].pos_y);
-        if (diffY > posThreshold)
-            gRemoteEntities[i].pos_y = targetPosY;
-        else
-            gRemoteEntities[i].pos_y = Lerp(gRemoteEntities[i].pos_y, targetPosY, lerpFactor);
-
-        gRemoteEntities[i].rotation = targetRot;
-        gRemoteEntities[i].scale = targetScale;
-        gRemoteEntities[i].objectType = gServerEntityPool[i].objectType;
-        gRemoteEntities[i].playerId = gServerEntityPool[i].playerId;
-        gRemoteEntities[i].vel_x = gServerEntityPool[i].vel_x;
-        gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
-    }
-}
-
+#pragma region Local Spawning
 // ----------------------------------------------------------------------
 // SpawnLocalEntity: Spawns a new local entity (e.g. bullet, power-up).
 // ----------------------------------------------------------------------
@@ -310,6 +217,9 @@ void SpawnBullet()
     SpawnLocalEntity(2, pkt.pos_x, pkt.pos_y, pkt.vel_x, pkt.vel_y, playerAngle, 100.0f);
 }
 
+#pragma endregion
+
+#pragma region Update Logic
 // ----------------------------------------------------------------------
 // UpdateLocalSimulation: Updates local simulation (player and local entities).
 // ----------------------------------------------------------------------
@@ -386,6 +296,73 @@ void UpdateLocalSimulation(float dt)
 
     // Here you could add more input-handling for other local-spawnable entities.
 }
+#pragma endregion
+
+#pragma region Client Interaction
+// ----------------------------------------------------------------------
+// Receive Thread: Processes JOIN_ACCEPT, GAME_UPDATE packets.
+// ----------------------------------------------------------------------
+void ReceiveThread(SOCKET socket)
+{
+    char buffer[BUFFER_SIZE];
+    sockaddr_in fromAddr{};
+    int fromLen = sizeof(fromAddr);
+    while (running)
+    {
+        int bytesReceived = recvfrom(socket, buffer, BUFFER_SIZE, 0,
+            reinterpret_cast<sockaddr*>(&fromAddr), &fromLen);
+        if (bytesReceived == SOCKET_ERROR)
+        {
+            int err = WSAGetLastError();
+            if (err == WSAEWOULDBLOCK)
+                continue;
+            std::cerr << "[ERROR] recvfrom failed: " << err << std::endl;
+            continue;
+        }
+        if (bytesReceived <= 0)
+            continue;
+
+        uint8_t packetType = static_cast<uint8_t>(buffer[0]);
+        if (packetType == JOIN_ACCEPT)
+        {
+            JoinAcceptPacket* pkt = reinterpret_cast<JoinAcceptPacket*>(buffer);
+            myPlayerId = pkt->playerId;
+            std::cout << "[JOINED] Assigned Player ID: " << myPlayerId << std::endl;
+        }
+        else if (packetType == GAME_UPDATE)
+        {
+            GameUpdatePacket* update = reinterpret_cast<GameUpdatePacket*>(buffer);
+            uint32_t count = update->objectCount;
+            if (count > MAX_REMOTE_OBJECTS)
+                count = MAX_REMOTE_OBJECTS;
+
+            std::lock_guard<std::mutex> lock(gPoolMutex);
+            uint32_t remoteIndex = 0;
+            for (uint32_t i = 0; i < count; i++)
+            {
+                const GameObjectData& src = update->objects[i];
+                // Skip local player's update.
+                if (src.objectType == 0 && src.playerId == myPlayerId)
+                    continue;
+                // Skip bullet updates from local player; local bullets are managed locally.
+                if (src.objectType == 2 && src.playerId == myPlayerId)
+                    continue;
+
+                gServerEntityPool[remoteIndex].pos_x = src.pos_x;
+                gServerEntityPool[remoteIndex].pos_y = src.pos_y;
+                gServerEntityPool[remoteIndex].rotation = src.rotation;
+                gServerEntityPool[remoteIndex].scale = src.scale;
+                gServerEntityPool[remoteIndex].objectType = src.objectType;
+                gServerEntityPool[remoteIndex].playerId = src.playerId;
+                gServerEntityPool[remoteIndex].vel_x = src.vel_x;
+                gServerEntityPool[remoteIndex].vel_y = src.vel_y;
+                remoteIndex++;
+            }
+            gRemoteCount.store(remoteIndex);
+        }
+    }
+}
+
 
 // ----------------------------------------------------------------------
 // SendPlayerUpdate: Sends the local player's state to the server.
@@ -406,6 +383,47 @@ void SendPlayerUpdate(int clientId)
     if (sentBytes == SOCKET_ERROR)
     {
         std::cerr << "[ERROR] sendto PLAYER_UPDATE failed: " << WSAGetLastError() << std::endl;
+    }
+}
+#pragma endregion
+
+#pragma region Render
+// ----------------------------------------------------------------------
+// UpdateRemoteInterpolation: Interpolates remote objects based on server data.
+// ----------------------------------------------------------------------
+void UpdateRemoteInterpolation(float dt)
+{
+    const float lerpFactor = 0.1f;
+    const float posThreshold = 50.0f;
+    const float extrapolationFactor = 1.0f; // Predict 1 second ahead.
+
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+    uint32_t remoteCount = gRemoteCount.load();
+    for (uint32_t i = 0; i < remoteCount; i++)
+    {
+        float targetPosX = gServerEntityPool[i].pos_x + gServerEntityPool[i].vel_x * extrapolationFactor;
+        float targetPosY = gServerEntityPool[i].pos_y + gServerEntityPool[i].vel_y * extrapolationFactor;
+        float targetRot = gServerEntityPool[i].rotation;
+        float targetScale = gServerEntityPool[i].scale;
+
+        float diffX = fabs(targetPosX - gRemoteEntities[i].pos_x);
+        if (diffX > posThreshold)
+            gRemoteEntities[i].pos_x = targetPosX;
+        else
+            gRemoteEntities[i].pos_x = Lerp(gRemoteEntities[i].pos_x, targetPosX, lerpFactor);
+
+        float diffY = fabs(targetPosY - gRemoteEntities[i].pos_y);
+        if (diffY > posThreshold)
+            gRemoteEntities[i].pos_y = targetPosY;
+        else
+            gRemoteEntities[i].pos_y = Lerp(gRemoteEntities[i].pos_y, targetPosY, lerpFactor);
+
+        gRemoteEntities[i].rotation = targetRot;
+        gRemoteEntities[i].scale = targetScale;
+        gRemoteEntities[i].objectType = gServerEntityPool[i].objectType;
+        gRemoteEntities[i].playerId = gServerEntityPool[i].playerId;
+        gRemoteEntities[i].vel_x = gServerEntityPool[i].vel_x;
+        gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
     }
 }
 
@@ -475,7 +493,9 @@ void Render()
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
 }
+#pragma endregion
 
+#pragma region DO NOT TOUCH
 // ----------------------------------------------------------------------
 // Main Entry Point
 // ----------------------------------------------------------------------
@@ -613,3 +633,4 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     WSACleanup();
     return 0;
 }
+#pragma endregion
