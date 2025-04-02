@@ -555,8 +555,8 @@ void UpdateRemoteInterpolation(float dt)
 
     for (int i = bulletStartIndex; i < bulletStartIndex + bulletCount; i++)
     {
-        gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x;
-        gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y;
+        gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x * dt;
+        gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y * dt;
     }
 }
 
@@ -638,7 +638,6 @@ void Render()
         AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
 
-        std::cout << "Bullet is being  rendered where" << std::endl;
         // Use the bullet texture for bullet entities.
         AEGfxTextureSet(BulletTexture, 0, 0);
         AEGfxSetTransform(finalMtx.m);
