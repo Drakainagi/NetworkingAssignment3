@@ -22,10 +22,12 @@
 #include <atomic>
 #include <conio.h>
 #include <vector>
-#include <cstring>
+#include <string>
 #include <cmath>
 #include <mutex>
 #include <string>
+#include <map>
+#include <algorithm>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -33,9 +35,11 @@
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 4096;
-constexpr int MAX_REMOTE_OBJECTS = 256;  // Objects coming from the server.
-constexpr int MAX_LOCAL_ENTITIES = 4000;     // Local pool for bullets, power-ups, etc.
+constexpr int MAX_REMOTE_OBJECTS = 8000;  // Objects coming from the server. // Anything above 5000 is considered as cached or fake entities that server does not know, hence the mismatch
+constexpr int MAX_REMOTE_BULLETS = 3000;    // Maximum number of bullet entities.
+constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
+constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
 bool gGameRunning{};
 
 #pragma region Helper Func
@@ -45,6 +49,14 @@ bool gGameRunning{};
 inline float Lerp(float a, float b, float t)
 {
     return a + (b - a) * t;
+}
+
+// ----------------------------------------------------------------------
+// Helper: Collision Check (Sphere to sphere) function
+// ----------------------------------------------------------------------
+bool checkSphereCollision(float x1, float y1, float r1, float x2, float y2, float r2) 
+{
+    return (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) <= (r1 + r2) * (r1 + r2);
 }
 #pragma endregion
 
@@ -58,8 +70,12 @@ enum PacketType : uint8_t
     PLAYER_UPDATE = 0x04,
     ACK = 0x05,
     BULLET_SPAWN = 0x06,  // New packet type for bullet spawning.
-    DISCONNECT = 0x07,
-    NAME_REJECTED = 0x08   // ✅ new packet type
+    // Score packets
+    SCORE_INCREMENT = 0x07,
+    SCORE_UPDATE = 0x08,
+    FINAL_SCOREBOARD = 0x09,
+    DISCONNECT = 0x10,
+    NAME_REJECTED = 0x11   // ✅ new packet type
 };
 
 #pragma pack(push, 1)
@@ -100,7 +116,7 @@ struct BulletSpawnPacket {
 };
 
 struct BulletSpawnMultiPacket {
-    uint8_t type;         // This will be BULLET_SPAWN or a new type if you prefer.
+    uint8_t type = BULLET_SPAWN;   // This will be BULLET_SPAWN or a new type if you prefer.
     uint32_t count;       // Number of bullets being sent.
     // Then an array of bullet data. For simplicity, we assume a fixed maximum.
     BulletSpawnPacket bullets[MAX_LOCAL_ENTITIES_SPAWN_RATE];  // Adjust size as necessary.
@@ -108,7 +124,7 @@ struct BulletSpawnMultiPacket {
 
 // Game object data received from the server (for remote objects).
 struct GameObjectData {
-    uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet, etc.
+    uint8_t objectType; // Use ObjectType
     uint32_t playerId;  // For player objects; for others, can be 0.
     float pos_x;
     float pos_y;
@@ -116,12 +132,31 @@ struct GameObjectData {
     float scale;
     float vel_x;      // Velocity X component.
     float vel_y;      // Velocity Y component.
+
+    bool isActive = true;
 };
 
 struct GameUpdatePacket {
     uint8_t type = GAME_UPDATE;
     uint32_t objectCount;
     GameObjectData objects[MAX_REMOTE_OBJECTS];
+};
+
+struct ScoreIncrementPacket {
+    uint8_t type = SCORE_INCREMENT;
+    uint32_t playerId;
+    uint32_t increment;
+};
+
+struct PlayerScore {
+    uint32_t playerId;
+    uint32_t score;
+};
+
+struct ScoreUpdatePacket {
+    uint8_t type = SCORE_UPDATE;
+    uint32_t scoreCount;
+    PlayerScore scores[MAX_PLAYERS];
 };
 
 #pragma pack(pop)
@@ -137,6 +172,11 @@ uint32_t myPlayerId = 0;
 SOCKET udpSocket = INVALID_SOCKET;
 sockaddr_in serverAddr{};
 
+// Score variables
+std::map<uint32_t, uint32_t> gScoreBoard;
+std::mutex gScoreMutex;
+
+
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
 // ----------------------------------------------------------------------
@@ -147,21 +187,30 @@ struct GameObject
     float vel_x = 0.0f, vel_y = 0.0f;
     float scale = 1.0f;
     float rotation = 0.0f;
-    uint8_t objectType = 0; // 0=Player, 1=Asteroid, 2=Bullet, etc.
+    uint8_t objectType = 0; // Use Object Type
     uint32_t playerId = 0;  // Valid for player objects.
 
     bool isSent = false;
+    bool isActive = true;
+};
+
+enum ObjectType 
+{
+    Player,
+    Asteroid,
+    Bullet
 };
 
 // Remote pool: all entities updated from the server.
 GameObject gRemoteEntities[MAX_REMOTE_OBJECTS];
-GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server.
+GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server. 
 std::atomic<uint32_t> gRemoteCount{ 0 };
+std::atomic<uint32_t> gBulletEntityCount{ 0 };
+std::atomic<uint32_t> gLocalEntityCount{ 0 };
 
 // Local pool: stores local player and other local spawned objects.
 GameObject gLocalPlayer; // Local player object.
 GameObject gLocalEntities[MAX_LOCAL_ENTITIES];
-uint32_t gLocalEntityCount = 0;
 
 // Mutex for synchronizing access to both pools.
 std::mutex gPoolMutex;
@@ -182,6 +231,7 @@ AEGfxVertexList* pMesh = nullptr;
 AEGfxTexture* AsteroidTexture = nullptr;
 AEGfxTexture* PlayerTexture = nullptr;
 AEGfxTexture* BulletTexture = nullptr;
+s8	pFont;
 
 #pragma endregion
 
@@ -192,7 +242,7 @@ AEGfxTexture* BulletTexture = nullptr;
 void SpawnLocalEntity(uint8_t objectType, float pos_x, float pos_y, float vel_x, float vel_y, float rotation, float scale)
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
-    if (gLocalEntityCount >= MAX_LOCAL_ENTITIES)
+    if (gLocalEntityCount.load() >= MAX_LOCAL_ENTITIES)
         return; // Pool full.
 
     GameObject& obj = gLocalEntities[gLocalEntityCount++];
@@ -233,6 +283,92 @@ void SpawnBullet()
     SpawnLocalEntity(2, pkt.pos_x, pkt.pos_y, pkt.vel_x, pkt.vel_y, playerAngle, 100.0f);
 }
 
+#pragma endregion
+
+#pragma region Score Logic
+// ----------------------------------------------------------------------
+//  Score Increment Function
+// ----------------------------------------------------------------------
+void ReportScoreUpdate(uint32_t playerId, uint32_t points)
+{
+    ScoreIncrementPacket pkt;
+    pkt.type = SCORE_INCREMENT;
+    pkt.playerId = playerId;
+    pkt.increment = points;
+
+    int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+        reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
+    if (sent == SOCKET_ERROR) {
+        std::cerr << "[ERROR] sendto SCORE_INCREMENT failed: " << WSAGetLastError() << std::endl;
+    }
+}
+
+// ----------------------------------------------------------------------
+//  Scoreboard render function
+// ----------------------------------------------------------------------
+void RenderScoreboardText()
+{
+    // Header
+    const char* headerText = "Scoreboard";
+    f32 w = 1.0f, h = 1.0f;
+    AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
+    AEGfxPrint(pFont, headerText, 1.0f - w - 0.05f, 1.0f - h - 0.05f, 0.5f, 1, 1, 1, 1);
+
+    // Lock and copy the current scoreboard
+    std::vector<std::pair<uint32_t, uint32_t>> sortedScores;
+    {
+        std::lock_guard<std::mutex> lock(gScoreMutex);
+        sortedScores.assign(gScoreBoard.begin(), gScoreBoard.end());
+    }
+
+    // Sort by score (descending)
+    std::sort(sortedScores.begin(), sortedScores.end(),
+        [](const auto& a, const auto& b) {
+            return a.second > b.second;
+        });
+
+    // Render top N players
+    const int maxEntries = 6;
+    int entryCount = static_cast<int>(sortedScores.size());
+    for (int i = 0; i < ((maxEntries < entryCount) ? maxEntries : entryCount); ++i)
+    {
+        const auto& entry = sortedScores[i];
+        uint32_t playerId = entry.first;
+        uint32_t score = entry.second;
+
+        std::string line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+        const char* txt = line.c_str();
+        f32 lineW = 1.0f, lineH = 1.0f;
+        AEGfxGetPrintSize(pFont, txt, 0.5f, &lineW, &lineH);
+
+        AEGfxPrint(pFont, txt, 1.0f - lineW - 0.05f, 1.0f - lineH - 0.05f - ((i + 1) * 0.07f), 0.5f, 1, 1, 1, 1);
+    }
+
+
+}
+#pragma endregion
+
+
+#pragma region Cleaning/Destroying Objects
+void CleanupLocalEntities()
+{
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+    uint32_t i = 0;
+    while (i < gLocalEntityCount.load())
+    {
+        if (!gLocalEntities[i].isActive)
+        {
+            // Swap with the last active element.
+            gLocalEntities[i] = gLocalEntities[gLocalEntityCount - 1];
+            gLocalEntityCount--;
+            // Do not increment i; process the swapped element.
+        }
+        else
+        {
+            ++i;
+        }
+    }
+}
 #pragma endregion
 
 #pragma region Update Logic
@@ -290,14 +426,14 @@ void UpdateLocalSimulation(float dt)
         gLocalPlayer.vel_y = playerVelY;
         gLocalPlayer.rotation = playerAngle;
         gLocalPlayer.scale = playerRenderScale;
-        gLocalPlayer.objectType = 0; // Local player.
+        gLocalPlayer.objectType = ObjectType::Player; // Local player.
         gLocalPlayer.playerId = myPlayerId;
     }
 
     // Update local entities (e.g., bullets) in the local pool.
     {
         std::lock_guard<std::mutex> lock(gPoolMutex);
-        for (uint32_t i = 0; i < gLocalEntityCount; i++)
+        for (uint32_t i = 0; i < gLocalEntityCount.load(); i++)
         {
             gLocalEntities[i].pos_x += gLocalEntities[i].vel_x * dt;
             gLocalEntities[i].pos_y += gLocalEntities[i].vel_y * dt;
@@ -310,8 +446,75 @@ void UpdateLocalSimulation(float dt)
         SpawnBullet();
     }
 
+    //Score increment
+    if (AEInputCheckTriggered(AEVK_1)) {
+        ReportScoreUpdate(myPlayerId, 10);  // +10 points test
+    }
     // Here you could add more input-handling for other local-spawnable entities.
 }
+
+// ----------------------------------------------------------------------
+// Handle Collision Logic
+// ----------------------------------------------------------------------
+void HandleCollisionChecks()
+{
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+
+    for (uint32_t i = 0; i < gRemoteCount.load(); i++)
+    {
+#pragma region With Player
+#if 1
+        if (checkSphereCollision(
+            gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+            gLocalPlayer.pos_x, gLocalPlayer.pos_y, gLocalPlayer.scale * 0.5f))
+        {
+            
+        }
+#endif
+#pragma endregion
+
+#pragma region With Master Client Bullets
+#if 1
+        for (uint32_t j = 0; j < gLocalEntityCount.load(); j++)
+        {
+            if (checkSphereCollision(
+                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+                gLocalEntities[j].pos_x, gLocalEntities[j].pos_y, gLocalEntities[j].scale * 0.5f))
+            {
+                //gLocalEntities[j].isActive = false;
+            }
+        }
+#endif
+#pragma endregion
+
+#pragma region With Each Other (different objs from server)
+#if 1
+        for (uint32_t j = 0; j < i + 1; j++)
+        {
+            if (checkSphereCollision(
+                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+                gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
+            {
+
+            }
+        }
+
+        // For fake bullets
+        for (uint32_t j = MAX_REMOTE_OBJECTS/2; j < MAX_REMOTE_OBJECTS / 2 + gBulletEntityCount.load(); j++)
+        {
+            if (checkSphereCollision(
+                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+                gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
+            {
+
+            }
+        }
+
+#endif
+#pragma endregion
+    }
+}
+
 #pragma endregion
 
 #pragma region Client Interaction
@@ -358,10 +561,10 @@ void ReceiveThread(SOCKET socket)
             {
                 const GameObjectData& src = update->objects[i];
                 // Skip local player's update.
-                if (src.objectType == 0 && src.playerId == myPlayerId)
+                if (src.objectType == ObjectType::Player && src.playerId == myPlayerId)
                     continue;
                 // Skip bullet updates from local player; local bullets are managed locally.
-                if (src.objectType == 2 && src.playerId == myPlayerId)
+                if (src.objectType == ObjectType::Bullet && src.playerId == myPlayerId)
                     continue;
 
                 gServerEntityPool[remoteIndex].pos_x = src.pos_x;
@@ -372,16 +575,92 @@ void ReceiveThread(SOCKET socket)
                 gServerEntityPool[remoteIndex].playerId = src.playerId;
                 gServerEntityPool[remoteIndex].vel_x = src.vel_x;
                 gServerEntityPool[remoteIndex].vel_y = src.vel_y;
+                gServerEntityPool[remoteIndex].isActive = src.isActive;
                 remoteIndex++;
             }
             gRemoteCount.store(remoteIndex);
+        }
+        // In your ReceiveThread function, add the BULLET_SPAWN case:
+        else if (packetType == BULLET_SPAWN)
+        {
+            // The minimum size for a multi-bullet packet includes type + count.
+            const size_t minMultiPacketSize = sizeof(uint8_t) + sizeof(uint32_t);
+            if (bytesReceived >= minMultiPacketSize)
+            {
+                // Read the bullet count field.
+                uint32_t count = *reinterpret_cast<uint32_t*>(buffer + sizeof(uint8_t));
+
+                // Calculate the expected packet size.
+                size_t expectedSize = sizeof(uint8_t) + sizeof(uint32_t) + count * sizeof(BulletSpawnPacket);
+                if (bytesReceived >= expectedSize && count >= 1)
+                {
+                    // Cast the buffer to a multi-bullet packet structure.
+                    BulletSpawnMultiPacket* multiPkt = reinterpret_cast<BulletSpawnMultiPacket*>(buffer);
+                    // Process each bullet in the multi-packet.
+                    for (uint32_t i = 0; i < multiPkt->count; i++)
+                    {
+                        if (multiPkt->bullets[i].playerId == myPlayerId) break; //avoid spawning on master client that has spawned this to begin with
+
+                        // Calculate the bullet’s angle from its velocity.
+                        float angle = atan2f(multiPkt->bullets[i].vel_y, multiPkt->bullets[i].vel_x);
+
+                        // Create a new bullet GameObject.
+                        GameObject bullet;
+                        bullet.objectType = ObjectType::Bullet;          // Bullet type.
+                        bullet.playerId = multiPkt->bullets[i].playerId;
+                        bullet.pos_x = multiPkt->bullets[i].pos_x;
+                        bullet.pos_y = multiPkt->bullets[i].pos_y;
+                        bullet.vel_x = multiPkt->bullets[i].vel_x;
+                        bullet.vel_y = multiPkt->bullets[i].vel_y;
+                        bullet.rotation = angle;
+                        bullet.scale = 100.0f;          // Adjust scale as desired.
+
+                        // Compute the insertion index in the global pool:
+                        int bulletIndex = (MAX_REMOTE_OBJECTS / 2) + gBulletEntityCount.fetch_add(1);
+                        if (bulletIndex < MAX_REMOTE_OBJECTS)
+                        {
+                            std::lock_guard<std::mutex> lock(gPoolMutex);
+                            gServerEntityPool[bulletIndex] = bullet;
+                            std::cout << "[BULLET SPAWN] Added bullet entity at index " << bulletIndex << std::endl;
+                        }
+                        else
+                        {
+                            std::cerr << "[WARN] Global bullet pool is full; cannot add new bullet." << std::endl;
+                        }
+                    }
+                }
+                else
+                {
+                    std::cerr << "[WARN] Incomplete or invalid bullet spawn packet received." << std::endl;
+                }
+            }
+            else
+            {
+                std::cerr << "[WARN] Received bullet spawn packet with insufficient size." << std::endl;
+            }
+        }
+        else if (packetType == SCORE_UPDATE)
+        {
+            ScoreUpdatePacket* pkt = reinterpret_cast<ScoreUpdatePacket*>(buffer);
+            std::lock_guard<std::mutex> lock(gScoreMutex);
+            gScoreBoard.clear();
+            for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
+                gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
+            }
+
+            // Optional: Console debug display
+            std::cout << "\n== LIVE SCOREBOARD ==\n";
+            for (const auto& pair : gScoreBoard) {
+                std::cout << "Player " << pair.first << ": " << pair.second << "\n";
+            }
+
+            std::cout << "=====================\n";
         }
         if (packetType == NAME_REJECTED) 
         {
             std::cout << "[SERVER] Name already taken. Please restart and try a different name.\n";
             running = false; // Optional: stop game loop
             gGameRunning = false;
-            continue;
         }
     }
 }
@@ -416,9 +695,9 @@ void SendLocalUpdate(int clientId)
     multiPkt.count = 0;
     {
         std::lock_guard<std::mutex> lock(gPoolMutex);
-        for (uint32_t i = 0; i < gLocalEntityCount && multiPkt.count < 10; i++)
+        for (uint32_t i = 0; i < gLocalEntityCount.load() && multiPkt.count < 10; i++)
         {
-            if (gLocalEntities[i].objectType == 2 && !gLocalEntities[i].isSent)
+            if (gLocalEntities[i].objectType == ObjectType::Bullet && !gLocalEntities[i].isSent)
             {
                 // Prepare the bullet spawn data.
                 multiPkt.bullets[multiPkt.count].playerId = myPlayerId;
@@ -431,7 +710,7 @@ void SendLocalUpdate(int clientId)
                 multiPkt.bullets[multiPkt.count].damage = 10.0f;
                 multiPkt.count++;
 
-                // Optionally, mark the bullet as already sent.
+                // Mark the bullet as already sent.
                 gLocalEntities[i].isSent = true;
             }
         }
@@ -467,6 +746,8 @@ void UpdateRemoteInterpolation(float dt)
     uint32_t remoteCount = gRemoteCount.load();
     for (uint32_t i = 0; i < remoteCount; i++)
     {
+        if (!gRemoteEntities[i].isActive) continue;
+
         float targetPosX = gServerEntityPool[i].pos_x + gServerEntityPool[i].vel_x * extrapolationFactor;
         float targetPosY = gServerEntityPool[i].pos_y + gServerEntityPool[i].vel_y * extrapolationFactor;
         float targetRot = gServerEntityPool[i].rotation;
@@ -491,6 +772,16 @@ void UpdateRemoteInterpolation(float dt)
         gRemoteEntities[i].vel_x = gServerEntityPool[i].vel_x;
         gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
     }
+
+    // Update bullets by simply adding velocity to position.
+    int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
+    int bulletCount = gBulletEntityCount.load();
+
+    for (int i = bulletStartIndex; i < bulletStartIndex + bulletCount; i++)
+    {
+        gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x * dt;
+        gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y * dt;
+    }
 }
 
 // ----------------------------------------------------------------------
@@ -514,7 +805,8 @@ void Render()
     }
 
     // Render local entities (bullets, etc.).
-    for (uint32_t i = 0; i < gLocalEntityCount; i++)
+    uint32_t localCount = gLocalEntityCount.load();
+    for (uint32_t i = 0; i < localCount; i++)
     {
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gLocalEntities[i].scale, gLocalEntities[i].scale);
@@ -524,7 +816,7 @@ void Render()
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
 
         // Choose texture based on object type.
-        if (gLocalEntities[i].objectType == 2) // Bullet.
+        if (gLocalEntities[i].objectType == ObjectType::Bullet) // Bullet.
             AEGfxTextureSet(BulletTexture, 0, 0);
         else
             AEGfxTextureSet(AsteroidTexture, 0, 0); // Or any other texture for other entity types.
@@ -536,6 +828,8 @@ void Render()
     uint32_t remoteCount = gRemoteCount.load();
     for (uint32_t i = 0; i < remoteCount; i++)
     {
+        if (!gRemoteEntities[i].isActive) continue;
+
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gRemoteEntities[i].scale, gRemoteEntities[i].scale);
         AEMtx33Rot(&rotMtx, gRemoteEntities[i].rotation + (3.1415926f / 2.0f));
@@ -558,6 +852,25 @@ void Render()
         AEGfxSetTransform(finalMtx.m);
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
+
+    // Render bullet entities from the global pool (second half).
+    int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
+    int bulletCount = gBulletEntityCount.load();
+    for (int i = bulletStartIndex; i < bulletStartIndex + bulletCount; i++)
+    {
+        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
+        AEMtx33Scale(&scaleMtx, gServerEntityPool[i].scale, gServerEntityPool[i].scale);
+        AEMtx33Rot(&rotMtx, gServerEntityPool[i].rotation + (3.1415926f / 2.0f));
+        AEMtx33Trans(&transMtx, gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y);
+        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
+        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
+
+        // Use the bullet texture for bullet entities.
+        AEGfxTextureSet(BulletTexture, 0, 0);
+        AEGfxSetTransform(finalMtx.m);
+        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
+    }
+    RenderScoreboardText();
 }
 #pragma endregion
 
@@ -659,6 +972,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AsteroidTexture = AEGfxTextureLoad("Assets/PlanetTexture.png");
     PlayerTexture = AEGfxTextureLoad("Assets/Player.png");
     BulletTexture = AEGfxTextureLoad("Assets/Fire.png");
+    pFont = AEGfxCreateFont("Assets/liberation-mono.ttf", 72); // load in font
 
     gGameRunning = true;
     while (gGameRunning)
@@ -678,8 +992,11 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         SendLocalUpdate(myPlayerId);
         // Interpolate remote entities.
         UpdateRemoteInterpolation(dt);
+        HandleCollisionChecks();
         // Render local and remote entities.
         Render();
+
+        CleanupLocalEntities();
 
         AESysFrameEnd();
         if (AEInputCheckTriggered(AEVK_ESCAPE) || !AESysDoesWindowExist())
@@ -690,7 +1007,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AEGfxTextureUnload(AsteroidTexture);
     AEGfxTextureUnload(PlayerTexture);
     AEGfxTextureUnload(BulletTexture);
+    AEGfxDestroyFont(pFont); //Unload font
     AESysExit();
+
 
     running = false;
     if (recvThread.joinable())

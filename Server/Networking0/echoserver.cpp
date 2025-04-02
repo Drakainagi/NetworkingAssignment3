@@ -67,8 +67,11 @@ enum PacketType : uint8_t
     PLAYER_UPDATE = 0x04,
     ACK = 0x05,
     BULLET_SPAWN = 0x06, // New packet type for bullet spawn.
-    DISCONNECT = 0x07,
-    NAME_REJECTED = 0x08   // ✅ new packet type
+    SCORE_INCREMENT = 0x07,
+    SCORE_UPDATE = 0x08,
+    FINAL_SCOREBOARD = 0x09,
+    DISCONNECT = 0x10,
+    NAME_REJECTED = 0x11   // ✅ new packet type
 };
 
 #pragma pack(push, 1)
@@ -119,14 +122,35 @@ struct GameObjectData {
     float scale;
     float vel_x;
     float vel_y;
+
+    bool isActive = true;
 };
 
-struct GameUpdatePacket {
+struct GameUpdatePacket 
+{
     uint8_t type = GAME_UPDATE;
     uint32_t objectCount;
     // Only players and asteroids are broadcast here.
-    GameObjectData objects[256]; // Legacy placeholder.
+    GameObjectData objects[4000]; // Legacy placeholder.
 };
+
+struct ScoreIncrementPacket {
+    uint8_t type;
+    uint32_t playerId;
+    uint32_t increment;
+};
+
+struct PlayerScore {
+    uint32_t playerId;
+    uint32_t score;
+};
+
+struct ScoreUpdatePacket {
+    uint8_t type = SCORE_UPDATE;
+    uint32_t scoreCount;
+    PlayerScore scores[MAX_PLAYERS];
+};
+
 #pragma pack(pop)
 #pragma endregion
 
@@ -157,6 +181,8 @@ struct AsteroidEntity {
     float scale;
     float vel_x, vel_y;
     int health;
+
+    bool isActive = true;
 };
 
 struct BulletEntity {
@@ -184,6 +210,10 @@ std::vector<BulletEntity> bullets;
 
 std::atomic<bool> running{ true };
 
+// Score board
+std::map<uint32_t, uint32_t> gScoreBoard;
+std::mutex gScoreMutex;
+
 SOCKET g_serverSocket = INVALID_SOCKET;
 
 #pragma endregion
@@ -191,29 +221,65 @@ SOCKET g_serverSocket = INVALID_SOCKET;
 #pragma region Spawning/Relaying Entities
 void spawnAsteroid()
 {
-    AsteroidEntity asteroid;
-    asteroid.pos_x = static_cast<float>(rand() % 800);
-    asteroid.pos_y = static_cast<float>(rand() % 600);
+    AsteroidEntity asteroid{};
+
+    float windowWidth = 1600.0f;
+    float windowHeight = 900.0f;
+
+    float halfWidth = windowWidth / 2.0f;
+    float halfHeight = windowHeight / 2.0f;
+
+    float edgeBuffer = 50.0f;
     asteroid.scale = static_cast<float>(rand() % 40 + 30);
-    asteroid.rotation = (static_cast<float>(rand()) / RAND_MAX) * 2.0f * 3.1415926f;
+    asteroid.health = 100;
+
+    // Pick a random edge to spawn from
+    int edge = rand() % 4;
+
+    switch (edge)
+    {
+    case 0: // Left
+        asteroid.pos_x = -halfWidth - edgeBuffer;
+        asteroid.pos_y = -halfHeight + static_cast<float>(rand()) / RAND_MAX * windowHeight;
+        break;
+    case 1: // Right
+        asteroid.pos_x = halfWidth + edgeBuffer;
+        asteroid.pos_y = -halfHeight + static_cast<float>(rand()) / RAND_MAX * windowHeight;
+        break;
+    case 2: // Top
+        asteroid.pos_y = halfHeight + edgeBuffer;
+        asteroid.pos_x = -halfWidth + static_cast<float>(rand()) / RAND_MAX * windowWidth;
+        break;
+    case 3: // Bottom
+        asteroid.pos_y = -halfHeight - edgeBuffer;
+        asteroid.pos_x = -halfWidth + static_cast<float>(rand()) / RAND_MAX * windowWidth;
+        break;
+    }
+
+    // Assign random angle and velocity
+    asteroid.rotation = static_cast<float>(rand()) / RAND_MAX * 2.0f * 3.1415926f;
     float speed = 50.0f + static_cast<float>(rand() % 50);
     asteroid.vel_x = cosf(asteroid.rotation) * speed;
     asteroid.vel_y = sinf(asteroid.rotation) * speed;
-    asteroid.health = 100;
 
     std::lock_guard<std::mutex> lock(gameStateMutex);
     asteroids.push_back(asteroid);
 }
 
-void relayBulletSpawn(const BulletSpawnPacket* bulletPkt)
+// Relay the multi bullet packet to all connected clients.
+void relayBulletSpawnMulti(const BulletSpawnMultiPacket* multiPkt, size_t packetSize)
 {
-    // Relay the bullet spawn packet immediately to all clients.
+#if 1 
+    std::cout << "[BULLET SPAWN] Relaying multi bullet spawn from player "
+        << multiPkt->bullets[0].playerId
+        << " with count: " << multiPkt->count << std::endl;
+#endif
     std::lock_guard<std::mutex> lock(clientsMutex);
     for (const auto& addr : clientAddresses)
     {
         int bytesSent = sendto(g_serverSocket,
-            reinterpret_cast<const char*>(bulletPkt),
-            sizeof(BulletSpawnPacket),
+            reinterpret_cast<const char*>(multiPkt),
+            packetSize,
             0,
             reinterpret_cast<const sockaddr*>(&addr),
             sizeof(addr));
@@ -222,30 +288,6 @@ void relayBulletSpawn(const BulletSpawnPacket* bulletPkt)
             std::cerr << "[ERROR] BULLET_SPAWN relay sendto failed: " << WSAGetLastError() << std::endl;
         }
     }
-}
-
-void handleBulletSpawn(const BulletSpawnPacket* bulletPkt)
-{
-    // Create the bullet entity in the game state.
-    BulletEntity newBullet;
-    newBullet.ownerId = bulletPkt->playerId;
-    newBullet.pos_x = bulletPkt->pos_x;
-    newBullet.pos_y = bulletPkt->pos_y;
-    newBullet.vel_x = bulletPkt->vel_x;
-    newBullet.vel_y = bulletPkt->vel_y;
-    newBullet.damage = bulletPkt->damage;
-    newBullet.scale = 10.0f; // Example scale.
-    newBullet.rotation = atan2f(newBullet.vel_y, newBullet.vel_x);
-
-    {
-        std::lock_guard<std::mutex> lock(gameStateMutex);
-        bullets.push_back(newBullet);
-    }
-    std::cout << "[BULLET SPAWN] Player " << bulletPkt->playerId
-        << " spawned bullet at (" << bulletPkt->pos_x << ", " << bulletPkt->pos_y << ")"
-        << " damage: " << bulletPkt->damage << std::endl;
-    // Relay the bullet spawn only once.
-    relayBulletSpawn(bulletPkt);
 }
 
 #pragma endregion
@@ -316,6 +358,7 @@ void broadcastGameState()
             data.scale = ast.scale;
             data.vel_x = ast.vel_x;
             data.vel_y = ast.vel_y;
+            data.isActive = ast.isActive;
             gameObjects.push_back(data);
         }
     }
@@ -345,6 +388,63 @@ void broadcastGameState()
         if (bytesSent == SOCKET_ERROR)
         {
             std::cerr << "[ERROR] GAME_UPDATE sendto failed: " << WSAGetLastError() << std::endl;
+        }
+    }
+}
+
+void broadcastScoreUpdate()
+{
+    std::vector<PlayerScore> scoreEntries;
+
+    {
+        std::lock_guard<std::mutex> lock(gScoreMutex);
+        for (const auto& [id, score] : gScoreBoard) {
+            PlayerScore entry;
+            entry.playerId = id;
+            entry.score = score;
+            scoreEntries.push_back(entry);
+        }
+    }
+
+    // Prepare header
+    uint8_t packetType = SCORE_UPDATE;
+    uint32_t scoreCount = static_cast<uint32_t>(scoreEntries.size());
+
+    size_t headerSize = sizeof(packetType) + sizeof(scoreCount);
+    size_t scoresSize = scoreEntries.size() * sizeof(PlayerScore);
+    size_t totalPacketSize = headerSize + scoresSize;
+
+    // Create buffer
+    std::vector<char> buffer(totalPacketSize);
+
+    // Copy header
+    memcpy(buffer.data(), &packetType, sizeof(packetType));
+    memcpy(buffer.data() + sizeof(packetType), &scoreCount, sizeof(scoreCount));
+
+    // Copy score entries
+    if (!scoreEntries.empty())
+    {
+        memcpy(buffer.data() + headerSize, scoreEntries.data(), scoresSize);
+    }
+
+    std::lock_guard<std::mutex> clientsLock(clientsMutex);
+    for (const auto& addr : clientAddresses)
+    {
+        std::cout << "[BROADCAST] Sending SCORE_UPDATE with " << scoreCount << " entries\n";
+        for (const auto& entry : scoreEntries)
+        {
+            std::cout << "  -> Player " << entry.playerId << " = " << entry.score << "\n";
+        }
+
+        int bytesSent = sendto(g_serverSocket,
+            buffer.data(),
+            static_cast<int>(totalPacketSize),
+            0,
+            reinterpret_cast<const sockaddr*>(&addr),
+            sizeof(addr));
+
+        if (bytesSent == SOCKET_ERROR) {
+            std::cerr << "[ERROR] SCORE_UPDATE sendto failed: " << WSAGetLastError() << std::endl;
         }
     }
 }
@@ -470,6 +570,30 @@ void handleJoinRequest(const sockaddr_in& clientAddr, const JoinRequestPacket* p
         << " from " << inet_ntoa(clientAddr.sin_addr) << ":" << ntohs(clientAddr.sin_port) << std::endl;
 }
 
+void handleScoreRequest(const char* buffer, int bytesReceived, const sockaddr_in& clientAddr)
+{
+    if (bytesReceived < sizeof(ScoreIncrementPacket))
+    {
+        std::cerr << "[ERROR] SCORE_INCREMENT packet too small\n";
+        return;
+    }
+
+    const ScoreIncrementPacket* pkt = reinterpret_cast<const ScoreIncrementPacket*>(buffer);
+
+    {
+        std::lock_guard<std::mutex> lock(gScoreMutex);
+        gScoreBoard[pkt->playerId] += pkt->increment;
+
+        std::cout << "[SCORE] Player " << pkt->playerId
+            << " scored +" << pkt->increment
+            << " (Total: " << gScoreBoard[pkt->playerId] << ")\n";
+    }
+
+    // Safe because broadcastScoreUpdate locks internally
+    broadcastScoreUpdate();
+}
+
+
 void handlePlayerUpdate(const PlayerUpdatePacket* updatePkt)
 {
     std::lock_guard<std::mutex> lock(gameStateMutex);
@@ -482,9 +606,11 @@ void handlePlayerUpdate(const PlayerUpdatePacket* updatePkt)
         it->second.vel_x = updatePkt->vel_x;
         it->second.vel_y = updatePkt->vel_y;
     }
+#if 0 
     std::cout << "[UPDATE] Player " << updatePkt->playerId
         << " pos: (" << updatePkt->pos_x << ", " << updatePkt->pos_y << ")"
         << " angle: " << updatePkt->angle << std::endl;
+#endif
 }
 
 //---------------------------------------------------------------------------------
@@ -521,30 +647,36 @@ void serverReceiveLoop(SOCKET serverSocket)
             break;
         case BULLET_SPAWN:
         {
-            // Begin block
+            // The minimum size for a multi-packet includes type + count.
             const size_t minMultiPacketSize = sizeof(uint8_t) + sizeof(uint32_t);
             if (bytesReceived >= minMultiPacketSize)
             {
+                // Read the bullet count.
                 uint32_t count = *reinterpret_cast<uint32_t*>(buffer + sizeof(uint8_t));
+
+                // Calculate the expected size for the multi-bullet packet.
                 size_t expectedSize = sizeof(uint8_t) + sizeof(uint32_t) + count * sizeof(BulletSpawnPacket);
-                if (bytesReceived >= expectedSize && count > 1)
+                if (bytesReceived >= expectedSize && count >= 1)
                 {
+                    // Treat the packet as a multi-bullet packet and relay/process it.
                     BulletSpawnMultiPacket* multiPkt = reinterpret_cast<BulletSpawnMultiPacket*>(buffer);
-                    for (uint32_t i = 0; i < multiPkt->count; i++)
-                    {
-                        handleBulletSpawn(&multiPkt->bullets[i]);
-                    }
-                    break;
+                    relayBulletSpawnMulti(multiPkt, expectedSize); // Instead of spawning normally, simply relay the information of bullets since server doesnt need to keep track
+                }
+                else
+                {
+                    //Help me double check why it keeps sending incomplete
+                    std::cerr << "[WARN] Incomplete or invalid multi bullet packet received." << std::endl;
                 }
             }
-
-            if (bytesReceived >= sizeof(BulletSpawnPacket))
+            else
             {
-                BulletSpawnPacket* bulletPkt = reinterpret_cast<BulletSpawnPacket*>(buffer);
-                handleBulletSpawn(bulletPkt);
+                std::cerr << "[WARN] Received bullet spawn packet with insufficient size." << std::endl;
             }
             break;
         }
+        case SCORE_INCREMENT:
+        handleScoreRequest(buffer, bytesReceived, clientAddr);
+        break;
         case DISCONNECT:
         {
             if (bytesReceived >= 5) {
