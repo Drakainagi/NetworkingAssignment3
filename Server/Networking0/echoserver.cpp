@@ -200,15 +200,20 @@ void spawnAsteroid()
     asteroids.push_back(asteroid);
 }
 
-void relayBulletSpawn(const BulletSpawnPacket* bulletPkt)
+// Relay the multi bullet packet to all connected clients.
+void relayBulletSpawnMulti(const BulletSpawnMultiPacket* multiPkt, size_t packetSize)
 {
-    // Relay the bullet spawn packet immediately to all clients.
+#if 1 
+    std::cout << "[BULLET SPAWN] Relaying multi bullet spawn from player "
+        << multiPkt->bullets[0].playerId
+        << " with count: " << multiPkt->count << std::endl;
+#endif
     std::lock_guard<std::mutex> lock(clientsMutex);
     for (const auto& addr : clientAddresses)
     {
         int bytesSent = sendto(g_serverSocket,
-            reinterpret_cast<const char*>(bulletPkt),
-            sizeof(BulletSpawnPacket),
+            reinterpret_cast<const char*>(multiPkt),
+            packetSize,
             0,
             reinterpret_cast<const sockaddr*>(&addr),
             sizeof(addr));
@@ -217,30 +222,6 @@ void relayBulletSpawn(const BulletSpawnPacket* bulletPkt)
             std::cerr << "[ERROR] BULLET_SPAWN relay sendto failed: " << WSAGetLastError() << std::endl;
         }
     }
-}
-
-void handleBulletSpawn(const BulletSpawnPacket* bulletPkt)
-{
-    // Create the bullet entity in the game state.
-    BulletEntity newBullet;
-    newBullet.ownerId = bulletPkt->playerId;
-    newBullet.pos_x = bulletPkt->pos_x;
-    newBullet.pos_y = bulletPkt->pos_y;
-    newBullet.vel_x = bulletPkt->vel_x;
-    newBullet.vel_y = bulletPkt->vel_y;
-    newBullet.damage = bulletPkt->damage;
-    newBullet.scale = 10.0f; // Example scale.
-    newBullet.rotation = atan2f(newBullet.vel_y, newBullet.vel_x);
-
-    {
-        std::lock_guard<std::mutex> lock(gameStateMutex);
-        bullets.push_back(newBullet);
-    }
-    std::cout << "[BULLET SPAWN] Player " << bulletPkt->playerId
-        << " spawned bullet at (" << bulletPkt->pos_x << ", " << bulletPkt->pos_y << ")"
-        << " damage: " << bulletPkt->damage << std::endl;
-    // Relay the bullet spawn only once.
-    relayBulletSpawn(bulletPkt);
 }
 
 #pragma endregion
@@ -442,9 +423,11 @@ void handlePlayerUpdate(const PlayerUpdatePacket* updatePkt)
         it->second.vel_x = updatePkt->vel_x;
         it->second.vel_y = updatePkt->vel_y;
     }
+#if 0 
     std::cout << "[UPDATE] Player " << updatePkt->playerId
         << " pos: (" << updatePkt->pos_x << ", " << updatePkt->pos_y << ")"
         << " angle: " << updatePkt->angle << std::endl;
+#endif
 }
 
 //---------------------------------------------------------------------------------
@@ -478,32 +461,29 @@ void serverReceiveLoop(SOCKET serverSocket)
             break;
         case BULLET_SPAWN:
         {
-            // Determine if this is a multipacket or a single bullet spawn.
-            // The minimum size for a multipacket includes type + count.
+            // The minimum size for a multi-packet includes type + count.
             const size_t minMultiPacketSize = sizeof(uint8_t) + sizeof(uint32_t);
             if (bytesReceived >= minMultiPacketSize)
             {
-                // Peek at the count field.
+                // Read the bullet count.
                 uint32_t count = *reinterpret_cast<uint32_t*>(buffer + sizeof(uint8_t));
 
-                // Calculate expected size if it is a multipacket.
+                // Calculate the expected size for the multi-bullet packet.
                 size_t expectedSize = sizeof(uint8_t) + sizeof(uint32_t) + count * sizeof(BulletSpawnPacket);
-                if (bytesReceived >= expectedSize && count > 1)
+                if (bytesReceived >= expectedSize && count >= 1)
                 {
-                    // Handle multipacket: iterate over all bullet spawn packets.
+                    // Treat the packet as a multi-bullet packet and relay/process it.
                     BulletSpawnMultiPacket* multiPkt = reinterpret_cast<BulletSpawnMultiPacket*>(buffer);
-                    for (uint32_t i = 0; i < multiPkt->count; i++)
-                    {
-                        handleBulletSpawn(&multiPkt->bullets[i]);
-                    }
-                    break;
+                    relayBulletSpawnMulti(multiPkt, expectedSize); // Instead of spawning normally, simply relay the information of bullets since server doesnt need to keep track
+                }
+                else
+                {
+                    std::cerr << "[WARN] Incomplete or invalid multi bullet packet received." << std::endl;
                 }
             }
-            // Otherwise, assume a single bullet spawn packet.
-            if (bytesReceived >= sizeof(BulletSpawnPacket))
+            else
             {
-                BulletSpawnPacket* bulletPkt = reinterpret_cast<BulletSpawnPacket*>(buffer);
-                handleBulletSpawn(bulletPkt);
+                std::cerr << "[WARN] Received bullet spawn packet with insufficient size." << std::endl;
             }
             break;
         }

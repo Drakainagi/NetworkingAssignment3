@@ -32,7 +32,8 @@
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 1024;
-constexpr int MAX_REMOTE_OBJECTS = 4000;  // Objects coming from the server.
+constexpr int MAX_REMOTE_OBJECTS = 8000;  // Objects coming from the server. // Anything above 5000 is considered as cached or fake entities that server does not know, hence the mismatch
+constexpr int MAX_REMOTE_BULLETS = 3000;    // Maximum number of bullet entities.
 constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
 
@@ -150,8 +151,9 @@ struct GameObject
 
 // Remote pool: all entities updated from the server.
 GameObject gRemoteEntities[MAX_REMOTE_OBJECTS];
-GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server.
+GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server. 
 std::atomic<uint32_t> gRemoteCount{ 0 };
+std::atomic<uint32_t> gBulletEntityCount{ 0 };
 
 // Local pool: stores local player and other local spawned objects.
 GameObject gLocalPlayer; // Local player object.
@@ -371,6 +373,65 @@ void ReceiveThread(SOCKET socket)
             }
             gRemoteCount.store(remoteIndex);
         }
+        // In your ReceiveThread function, add the BULLET_SPAWN case:
+        else if (packetType == BULLET_SPAWN)
+        {
+            // The minimum size for a multi-bullet packet includes type + count.
+            const size_t minMultiPacketSize = sizeof(uint8_t) + sizeof(uint32_t);
+            if (bytesReceived >= minMultiPacketSize)
+            {
+                // Read the bullet count field.
+                uint32_t count = *reinterpret_cast<uint32_t*>(buffer + sizeof(uint8_t));
+
+                // Calculate the expected packet size.
+                size_t expectedSize = sizeof(uint8_t) + sizeof(uint32_t) + count * sizeof(BulletSpawnPacket);
+                if (bytesReceived >= expectedSize && count >= 1)
+                {
+                    // Cast the buffer to a multi-bullet packet structure.
+                    BulletSpawnMultiPacket* multiPkt = reinterpret_cast<BulletSpawnMultiPacket*>(buffer);
+                    // Process each bullet in the multi-packet.
+                    for (uint32_t i = 0; i < multiPkt->count; i++)
+                    {
+                        if (multiPkt->bullets[i].playerId == myPlayerId) break; //avoid spawning on master client that has spawned this to begin with
+
+                        // Calculate the bullet’s angle from its velocity.
+                        float angle = atan2f(multiPkt->bullets[i].vel_y, multiPkt->bullets[i].vel_x);
+
+                        // Create a new bullet GameObject.
+                        GameObject bullet;
+                        bullet.objectType = 2;          // Bullet type.
+                        bullet.playerId = multiPkt->bullets[i].playerId;
+                        bullet.pos_x = multiPkt->bullets[i].pos_x;
+                        bullet.pos_y = multiPkt->bullets[i].pos_y;
+                        bullet.vel_x = multiPkt->bullets[i].vel_x;
+                        bullet.vel_y = multiPkt->bullets[i].vel_y;
+                        bullet.rotation = angle;
+                        bullet.scale = 100.0f;          // Adjust scale as desired.
+
+                        // Compute the insertion index in the global pool:
+                        int bulletIndex = (MAX_REMOTE_OBJECTS / 2) + gBulletEntityCount.fetch_add(1);
+                        if (bulletIndex < MAX_REMOTE_OBJECTS)
+                        {
+                            std::lock_guard<std::mutex> lock(gPoolMutex);
+                            gServerEntityPool[bulletIndex] = bullet;
+                            std::cout << "[BULLET SPAWN] Added bullet entity at index " << bulletIndex << std::endl;
+                        }
+                        else
+                        {
+                            std::cerr << "[WARN] Global bullet pool is full; cannot add new bullet." << std::endl;
+                        }
+                    }
+                }
+                else
+                {
+                    std::cerr << "[WARN] Incomplete or invalid bullet spawn packet received." << std::endl;
+                }
+            }
+            else
+            {
+                std::cerr << "[WARN] Received bullet spawn packet with insufficient size." << std::endl;
+            }
+        }
     }
 }
 
@@ -419,7 +480,7 @@ void SendLocalUpdate(int clientId)
                 multiPkt.bullets[multiPkt.count].damage = 10.0f;
                 multiPkt.count++;
 
-                // Optionally, mark the bullet as already sent.
+                // Mark the bullet as already sent.
                 gLocalEntities[i].isSent = true;
             }
         }
@@ -478,6 +539,16 @@ void UpdateRemoteInterpolation(float dt)
         gRemoteEntities[i].playerId = gServerEntityPool[i].playerId;
         gRemoteEntities[i].vel_x = gServerEntityPool[i].vel_x;
         gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
+    }
+
+    // Update bullets by simply adding velocity to position.
+    int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
+    int bulletCount = gBulletEntityCount.load();
+
+    for (int i = bulletStartIndex; i < bulletStartIndex + bulletCount; i++)
+    {
+        gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x;
+        gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y;
     }
 }
 
@@ -543,6 +614,24 @@ void Render()
             AEGfxTextureSet(PlayerTexture, 0, 0);
             break;
         }
+        AEGfxSetTransform(finalMtx.m);
+        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
+    }
+
+    // Render bullet entities from the global pool (second half).
+    int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
+    int bulletCount = gBulletEntityCount.load();
+    for (int i = bulletStartIndex; i < bulletStartIndex + bulletCount; i++)
+    {
+        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
+        AEMtx33Scale(&scaleMtx, gServerEntityPool[i].scale, gServerEntityPool[i].scale);
+        AEMtx33Rot(&rotMtx, gServerEntityPool[i].rotation + (3.1415926f / 2.0f));
+        AEMtx33Trans(&transMtx, gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y);
+        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
+        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
+
+        // Use the bullet texture for bullet entities.
+        AEGfxTextureSet(BulletTexture, 0, 0);
         AEGfxSetTransform(finalMtx.m);
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
