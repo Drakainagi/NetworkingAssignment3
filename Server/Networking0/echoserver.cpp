@@ -53,6 +53,7 @@ constexpr uint16_t SERVER_PORT = 9000;
 constexpr int MAX_PLAYERS = 4;
 constexpr int BUFFER_SIZE = 1024;
 constexpr float UPDATE_RATE = 0.033f; // ~30 updates per second
+constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10;
 
 #pragma region Packets Declaration
 //---------------------------------------------------------------------------------
@@ -97,6 +98,13 @@ struct BulletSpawnPacket {
     float vel_x;
     float vel_y;
     float damage;
+};
+
+struct BulletSpawnMultiPacket {
+    uint8_t type;         // This will be BULLET_SPAWN or a new type if you prefer.
+    uint32_t count;       // Number of bullets being sent.
+    // Then an array of bullet data. For simplicity, we assume a fixed maximum.
+    BulletSpawnPacket bullets[MAX_LOCAL_ENTITIES_SPAWN_RATE];  // Adjust size as necessary.
 };
 
 struct GameObjectData {
@@ -469,12 +477,36 @@ void serverReceiveLoop(SOCKET serverSocket)
             }
             break;
         case BULLET_SPAWN:
+        {
+            // Determine if this is a multipacket or a single bullet spawn.
+            // The minimum size for a multipacket includes type + count.
+            const size_t minMultiPacketSize = sizeof(uint8_t) + sizeof(uint32_t);
+            if (bytesReceived >= minMultiPacketSize)
+            {
+                // Peek at the count field.
+                uint32_t count = *reinterpret_cast<uint32_t*>(buffer + sizeof(uint8_t));
+
+                // Calculate expected size if it is a multipacket.
+                size_t expectedSize = sizeof(uint8_t) + sizeof(uint32_t) + count * sizeof(BulletSpawnPacket);
+                if (bytesReceived >= expectedSize && count > 1)
+                {
+                    // Handle multipacket: iterate over all bullet spawn packets.
+                    BulletSpawnMultiPacket* multiPkt = reinterpret_cast<BulletSpawnMultiPacket*>(buffer);
+                    for (uint32_t i = 0; i < multiPkt->count; i++)
+                    {
+                        handleBulletSpawn(&multiPkt->bullets[i]);
+                    }
+                    break;
+                }
+            }
+            // Otherwise, assume a single bullet spawn packet.
             if (bytesReceived >= sizeof(BulletSpawnPacket))
             {
                 BulletSpawnPacket* bulletPkt = reinterpret_cast<BulletSpawnPacket*>(buffer);
                 handleBulletSpawn(bulletPkt);
             }
             break;
+        }
         default:
             std::cerr << "[WARN] Unknown packet type received: " << (int)packetType << std::endl;
             break;

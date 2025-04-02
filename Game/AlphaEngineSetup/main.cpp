@@ -34,6 +34,7 @@ constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 1024;
 constexpr int MAX_REMOTE_OBJECTS = 4000;  // Objects coming from the server.
 constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
+constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
 
 #pragma region Helper Func
  // ----------------------------------------------------------------------
@@ -93,6 +94,13 @@ struct BulletSpawnPacket {
     float damage;
 };
 
+struct BulletSpawnMultiPacket {
+    uint8_t type;         // This will be BULLET_SPAWN or a new type if you prefer.
+    uint32_t count;       // Number of bullets being sent.
+    // Then an array of bullet data. For simplicity, we assume a fixed maximum.
+    BulletSpawnPacket bullets[MAX_LOCAL_ENTITIES_SPAWN_RATE];  // Adjust size as necessary.
+};
+
 // Game object data received from the server (for remote objects).
 struct GameObjectData {
     uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet, etc.
@@ -127,7 +135,8 @@ sockaddr_in serverAddr{};
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
 // ----------------------------------------------------------------------
-struct GameObject {
+struct GameObject 
+{
     AEMtx33 transform;  // For rendering.
     float pos_x = 0.0f, pos_y = 0.0f;
     float vel_x = 0.0f, vel_y = 0.0f;
@@ -135,6 +144,8 @@ struct GameObject {
     float rotation = 0.0f;
     uint8_t objectType = 0; // 0=Player, 1=Asteroid, 2=Bullet, etc.
     uint32_t playerId = 0;  // Valid for player objects.
+
+    bool isSent = false;
 };
 
 // Remote pool: all entities updated from the server.
@@ -363,28 +374,71 @@ void ReceiveThread(SOCKET socket)
     }
 }
 
-
-// ----------------------------------------------------------------------
-// SendPlayerUpdate: Sends the local player's state to the server.
-// ----------------------------------------------------------------------
-void SendPlayerUpdate(int clientId)
+void SendLocalUpdate(int clientId)
 {
-    PlayerUpdatePacket pkt{};
-    pkt.type = PLAYER_UPDATE;
-    pkt.playerId = (myPlayerId != 0) ? myPlayerId : static_cast<uint32_t>(clientId);
-    pkt.pos_x = playerPosX;
-    pkt.pos_y = playerPosY;
-    pkt.angle = playerAngle;
-    pkt.vel_x = playerVelX;
-    pkt.vel_y = playerVelY;
+#pragma region Sending Player Packet
+    // First, send the player's update (as before).
+    PlayerUpdatePacket playerPkt{};
+    playerPkt.type = PLAYER_UPDATE;
+    playerPkt.playerId = (myPlayerId != 0) ? myPlayerId : static_cast<uint32_t>(clientId);
+    playerPkt.pos_x = playerPosX;
+    playerPkt.pos_y = playerPosY;
+    playerPkt.angle = playerAngle;
+    playerPkt.vel_x = playerVelX;
+    playerPkt.vel_y = playerVelY;
 
-    int sentBytes = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+    int sentBytes = sendto(udpSocket, reinterpret_cast<char*>(&playerPkt), sizeof(playerPkt), 0,
         reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
     if (sentBytes == SOCKET_ERROR)
     {
         std::cerr << "[ERROR] sendto PLAYER_UPDATE failed: " << WSAGetLastError() << std::endl;
     }
+#pragma endregion
+
+#pragma region Sending Bullet Packet
+    //////////////////////////////////////////////////////////////////////////////////////
+    // Sending Bullets
+    //////////////////////////////////////////////////////////////////////////////////////
+    BulletSpawnMultiPacket multiPkt{};
+    multiPkt.type = BULLET_SPAWN; // Using the same type, or define a new one.
+    multiPkt.count = 0;
+    {
+        std::lock_guard<std::mutex> lock(gPoolMutex);
+        for (uint32_t i = 0; i < gLocalEntityCount && multiPkt.count < 10; i++)
+        {
+            if (gLocalEntities[i].objectType == 2 && !gLocalEntities[i].isSent)
+            {
+                // Prepare the bullet spawn data.
+                multiPkt.bullets[multiPkt.count].playerId = myPlayerId;
+                multiPkt.bullets[multiPkt.count].bulletType = 0; // Standard bullet.
+                multiPkt.bullets[multiPkt.count].pos_x = gLocalEntities[i].pos_x;
+                multiPkt.bullets[multiPkt.count].pos_y = gLocalEntities[i].pos_y;
+                // Assuming vel_x and vel_y are already set in the local entity.
+                multiPkt.bullets[multiPkt.count].vel_x = gLocalEntities[i].vel_x;
+                multiPkt.bullets[multiPkt.count].vel_y = gLocalEntities[i].vel_y;
+                multiPkt.bullets[multiPkt.count].damage = 10.0f;
+                multiPkt.count++;
+
+                // Optionally, mark the bullet as already sent.
+                gLocalEntities[i].isSent = true;
+            }
+        }
+    }
+
+    // Only send the bullet packet if there is at least one bullet.
+    if (multiPkt.count > 0)
+    {
+        sentBytes = sendto(udpSocket, reinterpret_cast<char*>(&multiPkt),
+            sizeof(multiPkt.type) + sizeof(multiPkt.count) + multiPkt.count * sizeof(BulletSpawnPacket),
+            0, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
+        if (sentBytes == SOCKET_ERROR)
+        {
+            std::cerr << "[ERROR] sendto BULLET_SPAWN multi packet failed: " << WSAGetLastError() << std::endl;
+        }
+    }
+#pragma endregion
 }
+
 #pragma endregion
 
 #pragma region Render
@@ -608,7 +662,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
         // Update local simulation (local player and local entities).
         UpdateLocalSimulation(dt);
-        SendPlayerUpdate(clientId);
+        SendLocalUpdate(clientId);
         // Interpolate remote entities.
         UpdateRemoteInterpolation(dt);
         // Render local and remote entities.
