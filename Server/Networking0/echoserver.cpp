@@ -43,7 +43,7 @@
 // Network and Server Constants
 //---------------------------------------------------------------------------------
 constexpr uint16_t SERVER_PORT = 9000;
-constexpr int MAX_PLAYERS = 4;
+constexpr int MAX_PLAYERS = 4000;
 constexpr int BUFFER_SIZE = 1024;
 constexpr float UPDATE_RATE = 0.033f; // ~30 updates per second
 
@@ -56,7 +56,11 @@ enum PacketType : uint8_t
     JOIN_ACCEPT = 0x02,
     GAME_UPDATE = 0x03,
     PLAYER_UPDATE = 0x04,
-    ACK = 0x05
+    ACK = 0x05,
+    SCORE_INCREMENT = 0x06,
+    SCORE_UPDATE = 0x07,
+    FINAL_SCOREBOARD = 0x08
+
 };
 
 #pragma pack(push, 1)
@@ -95,6 +99,23 @@ struct GameUpdatePacket {
     // Followed by an array of GameObjectData (variable length)
     // (We build this packet dynamically.)
     GameObjectData objects[4000]; // Not used in transmission; legacy placeholder.
+};
+
+struct ScoreIncrementPacket {
+    uint8_t type;
+    uint32_t playerId;
+    uint32_t increment;
+};
+
+struct PlayerScore {
+    uint32_t playerId;
+    uint32_t score;
+};
+
+struct ScoreUpdatePacket {
+    uint8_t type;
+    uint32_t scoreCount;
+    PlayerScore scores[MAX_PLAYERS];
 };
 #pragma pack(pop)
 
@@ -142,6 +163,10 @@ std::mutex gameStateMutex;
 std::map<uint32_t, PlayerEntity> players;
 std::vector<AsteroidEntity> asteroids;
 std::vector<BulletEntity> bullets;
+
+// Score board
+std::map<uint32_t, uint32_t> gScoreBoard;
+std::mutex gScoreMutex;
 
 std::atomic<bool> running{ true };
 
@@ -287,6 +312,34 @@ void broadcastGameState()
     }
 }
 
+void broadcastScoreUpdate()
+{
+    ScoreUpdatePacket pkt;
+    pkt.type = SCORE_UPDATE;
+
+    int i = 0;
+    for (const auto& [id, score] : gScoreBoard) {
+        if (i >= MAX_PLAYERS) break;  // prevent out-of-bounds write
+        pkt.scores[i].playerId = id;
+        pkt.scores[i].score = score;
+        ++i;
+    }
+    pkt.scoreCount = i;
+
+    std::lock_guard<std::mutex> clientsLock(clientsMutex);
+    for (const auto& addr : clientAddresses)
+    {
+
+        std::cout << "[BROADCAST] Sending SCORE_UPDATE with " << pkt.scoreCount << " entries\n";
+        for (int j = 0; j < pkt.scoreCount; ++j) {
+            std::cout << "  -> Player " << pkt.scores[j].playerId << " = " << pkt.scores[j].score << "\n";
+        }
+
+        sendto(g_serverSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+            reinterpret_cast<const sockaddr*>(&addr), sizeof(addr));
+    }
+}
+
 void gameLoop()
 {
     const float dt = UPDATE_RATE;
@@ -379,9 +432,22 @@ void serverReceiveLoop(SOCKET serverSocket)
                 it->second.pos_y = updatePkt->pos_y;
                 it->second.rotation = updatePkt->angle;
             }
-            std::cout << "[UPDATE] Player " << updatePkt->playerId
-                << " pos: (" << updatePkt->pos_x << ", " << updatePkt->pos_y << ")"
-                << " angle: " << updatePkt->angle << std::endl;
+           // std::cout << "[UPDATE] Player " << updatePkt->playerId
+          //      << " pos: (" << updatePkt->pos_x << ", " << updatePkt->pos_y << ")"
+          //      << " angle: " << updatePkt->angle << std::endl;
+        }
+        else if (packetType == SCORE_INCREMENT)
+        {
+            ScoreIncrementPacket* scorePkt = reinterpret_cast<ScoreIncrementPacket*>(buffer);
+
+            std::lock_guard<std::mutex> lock(gScoreMutex);
+            gScoreBoard[scorePkt->playerId] += scorePkt->increment;
+
+            std::cout << "[SCORE] Player " << scorePkt->playerId
+                << " scored +" << scorePkt->increment
+                << " (Total: " << gScoreBoard[scorePkt->playerId] << ")\n";
+
+            broadcastScoreUpdate();
         }
     }
 }

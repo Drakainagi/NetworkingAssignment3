@@ -21,12 +21,13 @@
 #include <windows.h>
 #include <iostream>
 #include <thread>
-#include <atomic>
+#include <atomic>   
 #include <conio.h>
 #include <vector>
 #include <cstring>
 #include <cmath>
 #include <mutex>
+#include <map>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -34,6 +35,7 @@ constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 1024;
 constexpr int MAX_GAMEOBJECTS = 4000; // Maximum number of game objects expected
+constexpr int MAX_PLAYERS = 4000; // Maximum number of Players expected
 
 // Packet types (must match server definitions)
 enum PacketType : uint8_t {
@@ -41,7 +43,11 @@ enum PacketType : uint8_t {
     JOIN_ACCEPT = 0x02,
     GAME_UPDATE = 0x03,
     PLAYER_UPDATE = 0x04,
-    ACK = 0x05
+    ACK = 0x05,
+    // Score packets
+    SCORE_INCREMENT = 0x06,
+    SCORE_UPDATE = 0x07,
+    FINAL_SCOREBOARD = 0x08
 };
 
 #pragma pack(push, 1)
@@ -79,6 +85,24 @@ struct GameUpdatePacket
     uint32_t objectCount;
     GameObjectData objects[4000];
 };
+
+struct ScoreIncrementPacket {
+    uint8_t type = SCORE_INCREMENT;
+    uint32_t playerId;
+    uint32_t increment;
+};
+
+struct PlayerScore {
+    uint32_t playerId;
+    uint32_t score;
+};
+
+struct ScoreUpdatePacket {
+    uint8_t type = SCORE_UPDATE;
+    uint32_t scoreCount;
+    PlayerScore scores[MAX_PLAYERS];
+};
+
 #pragma pack(pop)
 
 // Global networking variables
@@ -87,6 +111,11 @@ uint32_t myPlayerId = 0;
 SOCKET udpSocket = INVALID_SOCKET;
 sockaddr_in serverAddr{};
 
+// Score variables
+std::map<uint32_t, uint32_t> gScoreBoard;
+std::mutex gScoreMutex;
+
+                  
 // ----------------------------------------------------------------------
 // Object Pooling Setup (Double-buffered)
 // ----------------------------------------------------------------------
@@ -110,6 +139,7 @@ AEGfxVertexList* pMesh = nullptr;
 AEGfxTexture* AsteroidTexture = nullptr;
 AEGfxTexture* PlayerTexture = nullptr;
 AEGfxTexture* BulletTexture = nullptr;
+s8	pFont;
 
 // ----------------------------------------------------------------------
 // Player Physics Variables (Local Simulation)
@@ -129,6 +159,24 @@ inline float Lerp(float a, float b, float t)
 {
     return a + (b - a) * t;
 }
+
+// ----------------------------------------------------------------------
+// Helper: Score Increment Function
+// ----------------------------------------------------------------------
+void ReportScoreUpdate(uint32_t playerId, uint32_t points)
+{
+    ScoreIncrementPacket pkt;
+    pkt.type = SCORE_INCREMENT;
+    pkt.playerId = playerId;
+    pkt.increment = points;
+
+    int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+        reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
+    if (sent == SOCKET_ERROR) {
+        std::cerr << "[ERROR] sendto SCORE_INCREMENT failed: " << WSAGetLastError() << std::endl;
+    }
+}
+
 
 // ----------------------------------------------------------------------
 // Receive Thread
@@ -172,8 +220,26 @@ void receiveThread(SOCKET udpSocket)
                 gGameObjectCount.store(count);
             }
         }
+        else if (packetType == SCORE_UPDATE)
+        {
+            ScoreUpdatePacket* pkt = reinterpret_cast<ScoreUpdatePacket*>(buffer);
+            std::lock_guard<std::mutex> lock(gScoreMutex);
+            gScoreBoard.clear();
+            for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
+                gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
+            }
+
+            // Optional: Console debug display
+            std::cout << "\n== LIVE SCOREBOARD ==\n";
+            for (const auto& pair : gScoreBoard) {
+                std::cout << "Player " << pair.first << ": " << pair.second << "\n";
+            }
+
+            std::cout << "=====================\n";
+        }
     }
 }
+
 
 // ----------------------------------------------------------------------
 // UpdateLerping()
@@ -206,6 +272,11 @@ void UpdateLocalSimulation(float dt)
     if (AEInputCheckCurr(AEVK_D)) rotationInput = -1.0f;
     if (AEInputCheckCurr(AEVK_A)) rotationInput = 1.0f;
 
+    //Score increment
+    if (AEInputCheckTriggered(AEVK_1)) {
+        ReportScoreUpdate(myPlayerId, 10);  // +10 points test
+    }
+
     const float thrustForce = 150.0f;
     const float torqueForce = 7.0f;
     const float linearDamping = 0.7f;
@@ -233,6 +304,19 @@ void UpdateLocalSimulation(float dt)
         playerPosY += windowHeight + playerRenderScale * 2;
     else if (playerPosY > windowHeight / 2 + playerRenderScale)
         playerPosY -= windowHeight + playerRenderScale * 2;
+
+    //Text rendering
+            // Text display for lose
+    std::string Str = "Your Score: " + std::to_string(10);
+
+    const char* WinTxt = Str.c_str();
+    AEGfxGetPrintSize(pFont, WinTxt, 1.f, &w, &h);
+    AEGfxPrint(pFont, WinTxt, -w / 2, -h / 2 + 0.2f, 1, 1, 1, 1, 1);
+
+    Str = "Press R to try again!";
+    WinTxt = Str.c_str();
+    AEGfxGetPrintSize(pFont, WinTxt, 1.f, &w, &h);
+    AEGfxPrint(pFont, WinTxt, -w / 2, (-h / 2) - 0.3f, 1, 1, 1, 1, 1);
 }
 
 // ----------------------------------------------------------------------
@@ -397,6 +481,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AEGfxTextureUnload(AsteroidTexture);
     AEGfxTextureUnload(PlayerTexture);
     AEGfxTextureUnload(BulletTexture);
+    AEGfxDestroyFont(pFont); //Unload font
     AESysExit();
 
     running = false;
