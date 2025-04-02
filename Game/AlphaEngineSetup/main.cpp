@@ -7,11 +7,8 @@
  *             simplified physics (client-side prediction) and
  *             sends PLAYER_UPDATE packets (including velocity).
  *             It also receives GAME_UPDATE packets containing
- *             all game objects. All entities (players, asteroids,
- *             bullets) are stored in a unified pool: index 0 is the
- *             local player and indices [1, remoteCount+1) are for
- *             remote objects. Additionally, when the player fires
- *             a bullet, a BULLET_SPAWN packet is sent to the server.
+ *             all game objects. We now separate local objects
+ *             (local player, bullets, etc.) from remote objects.
  *****************************************************************/
 
 #define WIN32_LEAN_AND_MEAN
@@ -35,7 +32,8 @@
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 1024;
-constexpr int MAX_GAMEOBJECTS = 4000; // Maximum remote objects (local player is at index 0)
+constexpr int MAX_REMOTE_OBJECTS = 4000;  // Objects coming from the server.
+constexpr int MAX_LOCAL_ENTITIES = 100;     // Local pool for bullets, power-ups, etc.
 
 // Packet types (must match server definitions)
 enum PacketType : uint8_t {
@@ -85,7 +83,7 @@ struct BulletSpawnPacket {
 
 // Game object data received from the server (for remote objects).
 struct GameObjectData {
-    uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet.
+    uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet, etc.
     uint32_t playerId;  // For player objects; for others, can be 0.
     float pos_x;
     float pos_y;
@@ -98,35 +96,43 @@ struct GameObjectData {
 struct GameUpdatePacket {
     uint8_t type = GAME_UPDATE;
     uint32_t objectCount;
-    GameObjectData objects[4000];
+    GameObjectData objects[MAX_REMOTE_OBJECTS];
 };
 
 #pragma pack(pop)
 
-// Global networking variables.
+// ----------------------------------------------------------------------
+// Global Networking Variables
+// ----------------------------------------------------------------------
 std::atomic<bool> running{ true };
 uint32_t myPlayerId = 0;
 SOCKET udpSocket = INVALID_SOCKET;
 sockaddr_in serverAddr{};
 
 // ----------------------------------------------------------------------
-// Unified Entity Pool
+// Entity Structures & Pools
 // ----------------------------------------------------------------------
-// We reserve index 0 for the local player; remote entities (including bullets)
-// are stored in indices [1, remoteCount+1).
 struct GameObject {
-    AEMtx33 transform;
-    float pos_x, pos_y;
-    float vel_x, vel_y;
-    float scale;
-    float rotation;
-    uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet.
-    uint32_t playerId;  // Valid for player objects.
+    AEMtx33 transform;  // For rendering.
+    float pos_x = 0.0f, pos_y = 0.0f;
+    float vel_x = 0.0f, vel_y = 0.0f;
+    float scale = 1.0f;
+    float rotation = 0.0f;
+    uint8_t objectType = 0; // 0=Player, 1=Asteroid, 2=Bullet, etc.
+    uint32_t playerId = 0;  // Valid for player objects.
 };
 
-GameObject gEntityPool[MAX_GAMEOBJECTS + 1];    // Index 0: local player; others: remote/spawned.
-GameObject gServerEntityPool[MAX_GAMEOBJECTS];  // Temporary buffer for server updates.
-std::atomic<uint32_t> gRemoteCount{ 0 };          // Number of remote entities.
+// Remote pool: all entities updated from the server.
+GameObject gRemoteEntities[MAX_REMOTE_OBJECTS];
+GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server.
+std::atomic<uint32_t> gRemoteCount{ 0 };
+
+// Local pool: stores local player and other local spawned objects.
+GameObject gLocalPlayer; // Local player object.
+GameObject gLocalEntities[MAX_LOCAL_ENTITIES];
+uint32_t gLocalEntityCount = 0;
+
+// Mutex for synchronizing access to both pools.
 std::mutex gPoolMutex;
 
 // ----------------------------------------------------------------------
@@ -188,8 +194,8 @@ void ReceiveThread(SOCKET socket)
         {
             GameUpdatePacket* update = reinterpret_cast<GameUpdatePacket*>(buffer);
             uint32_t count = update->objectCount;
-            if (count > 4000)
-                count = 4000;
+            if (count > MAX_REMOTE_OBJECTS)
+                count = MAX_REMOTE_OBJECTS;
 
             std::lock_guard<std::mutex> lock(gPoolMutex);
             uint32_t remoteIndex = 0;
@@ -199,6 +205,10 @@ void ReceiveThread(SOCKET socket)
                 // Skip local player's update.
                 if (src.objectType == 0 && src.playerId == myPlayerId)
                     continue;
+                // Skip bullet updates from local player; local bullets are managed locally.
+                if (src.objectType == 2 && src.playerId == myPlayerId)
+                    continue;
+
                 gServerEntityPool[remoteIndex].pos_x = src.pos_x;
                 gServerEntityPool[remoteIndex].pos_y = src.pos_y;
                 gServerEntityPool[remoteIndex].rotation = src.rotation;
@@ -215,9 +225,9 @@ void ReceiveThread(SOCKET socket)
 }
 
 // ----------------------------------------------------------------------
-// UpdateLerpingAndPredict: Updates remote entities in the unified pool.
+// UpdateRemoteInterpolation: Interpolates remote objects based on server data.
 // ----------------------------------------------------------------------
-void UpdateLerpingAndPredict(float dt)
+void UpdateRemoteInterpolation(float dt)
 {
     const float lerpFactor = 0.1f;
     const float posThreshold = 50.0f;
@@ -225,7 +235,6 @@ void UpdateLerpingAndPredict(float dt)
 
     std::lock_guard<std::mutex> lock(gPoolMutex);
     uint32_t remoteCount = gRemoteCount.load();
-    // Remote entities are stored in gEntityPool starting at index 1.
     for (uint32_t i = 0; i < remoteCount; i++)
     {
         float targetPosX = gServerEntityPool[i].pos_x + gServerEntityPool[i].vel_x * extrapolationFactor;
@@ -233,25 +242,45 @@ void UpdateLerpingAndPredict(float dt)
         float targetRot = gServerEntityPool[i].rotation;
         float targetScale = gServerEntityPool[i].scale;
 
-        float diffX = fabs(targetPosX - gEntityPool[i + 1].pos_x);
+        float diffX = fabs(targetPosX - gRemoteEntities[i].pos_x);
         if (diffX > posThreshold)
-            gEntityPool[i + 1].pos_x = targetPosX;
+            gRemoteEntities[i].pos_x = targetPosX;
         else
-            gEntityPool[i + 1].pos_x = Lerp(gEntityPool[i + 1].pos_x, targetPosX, lerpFactor);
+            gRemoteEntities[i].pos_x = Lerp(gRemoteEntities[i].pos_x, targetPosX, lerpFactor);
 
-        float diffY = fabs(targetPosY - gEntityPool[i + 1].pos_y);
+        float diffY = fabs(targetPosY - gRemoteEntities[i].pos_y);
         if (diffY > posThreshold)
-            gEntityPool[i + 1].pos_y = targetPosY;
+            gRemoteEntities[i].pos_y = targetPosY;
         else
-            gEntityPool[i + 1].pos_y = Lerp(gEntityPool[i + 1].pos_y, targetPosY, lerpFactor);
+            gRemoteEntities[i].pos_y = Lerp(gRemoteEntities[i].pos_y, targetPosY, lerpFactor);
 
-        gEntityPool[i + 1].rotation = targetRot;
-        gEntityPool[i + 1].scale = targetScale;
-        gEntityPool[i + 1].objectType = gServerEntityPool[i].objectType;
-        gEntityPool[i + 1].playerId = gServerEntityPool[i].playerId;
-        gEntityPool[i + 1].vel_x = gServerEntityPool[i].vel_x;
-        gEntityPool[i + 1].vel_y = gServerEntityPool[i].vel_y;
+        gRemoteEntities[i].rotation = targetRot;
+        gRemoteEntities[i].scale = targetScale;
+        gRemoteEntities[i].objectType = gServerEntityPool[i].objectType;
+        gRemoteEntities[i].playerId = gServerEntityPool[i].playerId;
+        gRemoteEntities[i].vel_x = gServerEntityPool[i].vel_x;
+        gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
     }
+}
+
+// ----------------------------------------------------------------------
+// SpawnLocalEntity: Spawns a new local entity (e.g. bullet, power-up).
+// ----------------------------------------------------------------------
+void SpawnLocalEntity(uint8_t objectType, float pos_x, float pos_y, float vel_x, float vel_y, float rotation, float scale)
+{
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+    if (gLocalEntityCount >= MAX_LOCAL_ENTITIES)
+        return; // Pool full.
+
+    GameObject& obj = gLocalEntities[gLocalEntityCount++];
+    obj.objectType = objectType;
+    obj.playerId = myPlayerId;  // For example, associate with the local player.
+    obj.pos_x = pos_x;
+    obj.pos_y = pos_y;
+    obj.vel_x = vel_x;
+    obj.vel_y = vel_y;
+    obj.rotation = rotation;
+    obj.scale = scale;
 }
 
 // ----------------------------------------------------------------------
@@ -259,11 +288,10 @@ void UpdateLerpingAndPredict(float dt)
 // ----------------------------------------------------------------------
 void SpawnBullet()
 {
-    // Define bullet properties.
+    // Prepare packet data.
     BulletSpawnPacket pkt{};
     pkt.playerId = myPlayerId;
     pkt.bulletType = 0;   // Standard bullet.
-    // Spawn bullet at tip of player's ship (adjust as needed).
     pkt.pos_x = playerPosX;
     pkt.pos_y = playerPosY;
     float bulletSpeed = 500.0f;
@@ -278,29 +306,16 @@ void SpawnBullet()
         std::cerr << "[ERROR] sendto BULLET_SPAWN failed: " << WSAGetLastError() << std::endl;
     }
 
-    // Spawn bullet locally in the unified entity pool.
-    std::lock_guard<std::mutex> lock(gPoolMutex);
-    uint32_t newIndex = gRemoteCount.load() + 1; // After current remote objects.
-    if (newIndex < MAX_GAMEOBJECTS + 1) {
-        gEntityPool[newIndex].objectType = 2; // Bullet.
-        gEntityPool[newIndex].playerId = myPlayerId;
-        gEntityPool[newIndex].pos_x = pkt.pos_x;
-        gEntityPool[newIndex].pos_y = pkt.pos_y;
-        gEntityPool[newIndex].vel_x = pkt.vel_x;
-        gEntityPool[newIndex].vel_y = pkt.vel_y;
-        gEntityPool[newIndex].rotation = playerAngle;
-        gEntityPool[newIndex].scale = 10.0f; // Arbitrary bullet size.
-        // Increase remote count so this bullet is rendered.
-        gRemoteCount++;
-    }
+    // Spawn bullet locally in the local pool.
+    SpawnLocalEntity(2, pkt.pos_x, pkt.pos_y, pkt.vel_x, pkt.vel_y, playerAngle, 100.0f);
 }
 
 // ----------------------------------------------------------------------
-// UpdateLocalSimulation: Updates local simulation and the local player's entity.
-// Also checks for bullet spawn input.
+// UpdateLocalSimulation: Updates local simulation (player and local entities).
 // ----------------------------------------------------------------------
 void UpdateLocalSimulation(float dt)
 {
+    // Process input for player movement.
     float thrustInput = 0.0f;
     float rotationInput = 0.0f;
     if (AEInputCheckCurr(AEVK_W))
@@ -340,16 +355,27 @@ void UpdateLocalSimulation(float dt)
     else if (playerPosY > windowHeight / 2 + playerRenderScale)
         playerPosY -= windowHeight + playerRenderScale * 2;
 
+    // Update local player.
     {
         std::lock_guard<std::mutex> lock(gPoolMutex);
-        gEntityPool[0].pos_x = playerPosX;
-        gEntityPool[0].pos_y = playerPosY;
-        gEntityPool[0].vel_x = playerVelX;
-        gEntityPool[0].vel_y = playerVelY;
-        gEntityPool[0].rotation = playerAngle;
-        gEntityPool[0].scale = playerRenderScale;
-        gEntityPool[0].objectType = 0; // Local player.
-        gEntityPool[0].playerId = myPlayerId;
+        gLocalPlayer.pos_x = playerPosX;
+        gLocalPlayer.pos_y = playerPosY;
+        gLocalPlayer.vel_x = playerVelX;
+        gLocalPlayer.vel_y = playerVelY;
+        gLocalPlayer.rotation = playerAngle;
+        gLocalPlayer.scale = playerRenderScale;
+        gLocalPlayer.objectType = 0; // Local player.
+        gLocalPlayer.playerId = myPlayerId;
+    }
+
+    // Update local entities (e.g., bullets) in the local pool.
+    {
+        std::lock_guard<std::mutex> lock(gPoolMutex);
+        for (uint32_t i = 0; i < gLocalEntityCount; i++)
+        {
+            gLocalEntities[i].pos_x += gLocalEntities[i].vel_x * dt;
+            gLocalEntities[i].pos_y += gLocalEntities[i].vel_y * dt;
+        }
     }
 
     // Check for bullet spawn input (fire key, e.g., SPACE).
@@ -357,6 +383,8 @@ void UpdateLocalSimulation(float dt)
     {
         SpawnBullet();
     }
+
+    // Here you could add more input-handling for other local-spawnable entities.
 }
 
 // ----------------------------------------------------------------------
@@ -382,26 +410,57 @@ void SendPlayerUpdate(int clientId)
 }
 
 // ----------------------------------------------------------------------
-// Render: Renders all entities from the unified entity pool.
+// Render: Renders local player, local entities, and remote entities.
 // ----------------------------------------------------------------------
 void Render()
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
-    uint32_t totalEntities = 1 + gRemoteCount.load(); // Index 0 (local) + remote.
-    for (uint32_t i = 0; i < totalEntities; i++)
+
+    // Render local player.
     {
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
-        AEMtx33Scale(&scaleMtx, gEntityPool[i].scale, gEntityPool[i].scale);
-        AEMtx33Rot(&rotMtx, gEntityPool[i].rotation + (3.1415926f / 2.0f));
-        AEMtx33Trans(&transMtx, gEntityPool[i].pos_x, gEntityPool[i].pos_y);
+        AEMtx33Scale(&scaleMtx, gLocalPlayer.scale, gLocalPlayer.scale);
+        AEMtx33Rot(&rotMtx, gLocalPlayer.rotation + (3.1415926f / 2.0f));
+        AEMtx33Trans(&transMtx, gLocalPlayer.pos_x, gLocalPlayer.pos_y);
+        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
+        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
+        AEGfxTextureSet(PlayerTexture, 0, 0);
+        AEGfxSetTransform(finalMtx.m);
+        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
+    }
+
+    // Render local entities (bullets, etc.).
+    for (uint32_t i = 0; i < gLocalEntityCount; i++)
+    {
+        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
+        AEMtx33Scale(&scaleMtx, gLocalEntities[i].scale, gLocalEntities[i].scale);
+        AEMtx33Rot(&rotMtx, gLocalEntities[i].rotation + (3.1415926f / 2.0f));
+        AEMtx33Trans(&transMtx, gLocalEntities[i].pos_x, gLocalEntities[i].pos_y);
         AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
 
-        switch (gEntityPool[i].objectType)
+        // Choose texture based on object type.
+        if (gLocalEntities[i].objectType == 2) // Bullet.
+            AEGfxTextureSet(BulletTexture, 0, 0);
+        else
+            AEGfxTextureSet(AsteroidTexture, 0, 0); // Or any other texture for other entity types.
+        AEGfxSetTransform(finalMtx.m);
+        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
+    }
+
+    // Render remote entities.
+    uint32_t remoteCount = gRemoteCount.load();
+    for (uint32_t i = 0; i < remoteCount; i++)
+    {
+        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
+        AEMtx33Scale(&scaleMtx, gRemoteEntities[i].scale, gRemoteEntities[i].scale);
+        AEMtx33Rot(&rotMtx, gRemoteEntities[i].rotation + (3.1415926f / 2.0f));
+        AEMtx33Trans(&transMtx, gRemoteEntities[i].pos_x, gRemoteEntities[i].pos_y);
+        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
+        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
+
+        switch (gRemoteEntities[i].objectType)
         {
-        case 0:
-            AEGfxTextureSet(PlayerTexture, 0, 0);
-            break;
         case 1:
             AEGfxTextureSet(AsteroidTexture, 0, 0);
             break;
@@ -409,7 +468,7 @@ void Render()
             AEGfxTextureSet(BulletTexture, 0, 0);
             break;
         default:
-            AEGfxTextureSet(AsteroidTexture, 0, 0);
+            AEGfxTextureSet(PlayerTexture, 0, 0);
             break;
         }
         AEGfxSetTransform(finalMtx.m);
@@ -527,12 +586,12 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
         float dt = static_cast<float>(AEFrameRateControllerGetFrameTime());
 
-        // Update local simulation and handle bullet spawn.
+        // Update local simulation (local player and local entities).
         UpdateLocalSimulation(dt);
         SendPlayerUpdate(clientId);
-        // Update remote objects interpolation.
-        UpdateLerpingAndPredict(dt);
-        // Render all entities.
+        // Interpolate remote entities.
+        UpdateRemoteInterpolation(dt);
+        // Render local and remote entities.
         Render();
 
         AESysFrameEnd();
