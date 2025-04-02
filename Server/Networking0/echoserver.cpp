@@ -66,7 +66,10 @@ enum PacketType : uint8_t
     GAME_UPDATE = 0x03,
     PLAYER_UPDATE = 0x04,
     ACK = 0x05,
-    BULLET_SPAWN = 0x06  // New packet type for bullet spawn.
+    BULLET_SPAWN = 0x06, // New packet type for bullet spawn.
+    SCORE_INCREMENT = 0x07,
+    SCORE_UPDATE = 0x08,
+    FINAL_SCOREBOARD = 0x09
 };
 
 #pragma pack(push, 1)
@@ -124,6 +127,24 @@ struct GameUpdatePacket {
     // Only players and asteroids are broadcast here.
     GameObjectData objects[4000]; // Legacy placeholder.
 };
+
+struct ScoreIncrementPacket {
+    uint8_t type;
+    uint32_t playerId;
+    uint32_t increment;
+};
+
+struct PlayerScore {
+    uint32_t playerId;
+    uint32_t score;
+};
+
+struct ScoreUpdatePacket {
+    uint8_t type = SCORE_UPDATE;
+    uint32_t scoreCount;
+    PlayerScore scores[MAX_PLAYERS];
+};
+
 #pragma pack(pop)
 #pragma endregion
 
@@ -178,6 +199,10 @@ std::vector<AsteroidEntity> asteroids;
 std::vector<BulletEntity> bullets;
 
 std::atomic<bool> running{ true };
+
+// Score board
+std::map<uint32_t, uint32_t> gScoreBoard;
+std::mutex gScoreMutex;
 
 SOCKET g_serverSocket = INVALID_SOCKET;
 
@@ -344,6 +369,63 @@ void broadcastGameState()
     }
 }
 
+void broadcastScoreUpdate()
+{
+    std::vector<PlayerScore> scoreEntries;
+
+    {
+        std::lock_guard<std::mutex> lock(gScoreMutex);
+        for (const auto& [id, score] : gScoreBoard) {
+            PlayerScore entry;
+            entry.playerId = id;
+            entry.score = score;
+            scoreEntries.push_back(entry);
+        }
+    }
+
+    // Prepare header
+    uint8_t packetType = SCORE_UPDATE;
+    uint32_t scoreCount = static_cast<uint32_t>(scoreEntries.size());
+
+    size_t headerSize = sizeof(packetType) + sizeof(scoreCount);
+    size_t scoresSize = scoreEntries.size() * sizeof(PlayerScore);
+    size_t totalPacketSize = headerSize + scoresSize;
+
+    // Create buffer
+    std::vector<char> buffer(totalPacketSize);
+
+    // Copy header
+    memcpy(buffer.data(), &packetType, sizeof(packetType));
+    memcpy(buffer.data() + sizeof(packetType), &scoreCount, sizeof(scoreCount));
+
+    // Copy score entries
+    if (!scoreEntries.empty())
+    {
+        memcpy(buffer.data() + headerSize, scoreEntries.data(), scoresSize);
+    }
+
+    std::lock_guard<std::mutex> clientsLock(clientsMutex);
+    for (const auto& addr : clientAddresses)
+    {
+        std::cout << "[BROADCAST] Sending SCORE_UPDATE with " << scoreCount << " entries\n";
+        for (const auto& entry : scoreEntries)
+        {
+            std::cout << "  -> Player " << entry.playerId << " = " << entry.score << "\n";
+        }
+
+        int bytesSent = sendto(g_serverSocket,
+            buffer.data(),
+            static_cast<int>(totalPacketSize),
+            0,
+            reinterpret_cast<const sockaddr*>(&addr),
+            sizeof(addr));
+
+        if (bytesSent == SOCKET_ERROR) {
+            std::cerr << "[ERROR] SCORE_UPDATE sendto failed: " << WSAGetLastError() << std::endl;
+        }
+    }
+}
+
 //This is essentially Update()
 void gameLoop()
 {
@@ -430,6 +512,30 @@ void handleJoinRequest(const sockaddr_in& clientAddr)
         << inet_ntoa(clientAddr.sin_addr) << ":" << ntohs(clientAddr.sin_port) << std::endl;
 }
 
+void handleScoreRequest(const char* buffer, int bytesReceived, const sockaddr_in& clientAddr)
+{
+    if (bytesReceived < sizeof(ScoreIncrementPacket))
+    {
+        std::cerr << "[ERROR] SCORE_INCREMENT packet too small\n";
+        return;
+    }
+
+    const ScoreIncrementPacket* pkt = reinterpret_cast<const ScoreIncrementPacket*>(buffer);
+
+    {
+        std::lock_guard<std::mutex> lock(gScoreMutex);
+        gScoreBoard[pkt->playerId] += pkt->increment;
+
+        std::cout << "[SCORE] Player " << pkt->playerId
+            << " scored +" << pkt->increment
+            << " (Total: " << gScoreBoard[pkt->playerId] << ")\n";
+    }
+
+    // Safe because broadcastScoreUpdate locks internally
+    broadcastScoreUpdate();
+}
+
+
 void handlePlayerUpdate(const PlayerUpdatePacket* updatePkt)
 {
     std::lock_guard<std::mutex> lock(gameStateMutex);
@@ -507,6 +613,10 @@ void serverReceiveLoop(SOCKET serverSocket)
             }
             break;
         }
+
+        case SCORE_INCREMENT:
+            handleScoreRequest(buffer, bytesReceived, clientAddr);
+            break;
         default:
             std::cerr << "[WARN] Unknown packet type received: " << (int)packetType << std::endl;
             break;
