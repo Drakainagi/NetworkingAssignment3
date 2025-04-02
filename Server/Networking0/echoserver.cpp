@@ -51,7 +51,7 @@ bool addressesEqual(const sockaddr_in& a, const sockaddr_in& b)
  //---------------------------------------------------------------------------------
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int MAX_PLAYERS = 4;
-constexpr int BUFFER_SIZE = 1024;
+constexpr int BUFFER_SIZE = 4096;
 constexpr float UPDATE_RATE = 0.033f; // ~30 updates per second
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10;
 
@@ -125,7 +125,7 @@ struct GameUpdatePacket {
     uint8_t type = GAME_UPDATE;
     uint32_t objectCount;
     // Only players and asteroids are broadcast here.
-    GameObjectData objects[4000]; // Legacy placeholder.
+    GameObjectData objects[256]; // Legacy placeholder.
 };
 #pragma pack(pop)
 #pragma endregion

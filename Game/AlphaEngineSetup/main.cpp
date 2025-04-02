@@ -32,9 +32,9 @@
  // Constants
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
-constexpr int BUFFER_SIZE = 1024;
-constexpr int MAX_REMOTE_OBJECTS = 4000;  // Objects coming from the server.
-constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
+constexpr int BUFFER_SIZE = 4096;
+constexpr int MAX_REMOTE_OBJECTS = 256;  // Objects coming from the server.
+constexpr int MAX_LOCAL_ENTITIES = 4000;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
 bool gGameRunning{};
 
