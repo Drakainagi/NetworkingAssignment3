@@ -162,15 +162,6 @@ sockaddr_in serverAddr{};
 std::map<uint32_t, uint32_t> gScoreBoard;
 std::mutex gScoreMutex;
 
-// Game State 
-enum GameState {
-    Playing,
-    Pause,
-    Win
-};
-
-GameState gameState = Playing; // Defaults allows simulation, etc
-
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
 // ----------------------------------------------------------------------
@@ -224,7 +215,21 @@ AEGfxVertexList* pMesh = nullptr;
 AEGfxTexture* AsteroidTexture = nullptr;
 AEGfxTexture* PlayerTexture = nullptr;
 AEGfxTexture* BulletTexture = nullptr;
+AEGfxTexture* BackgroundTexture = nullptr;
 s8	pFont;
+
+// Local game state conditions (Win lose based on score)
+
+enum GameState {
+    Playing,
+    Win
+};
+
+GameState gameState = Playing; // Defaults allows simulation, etc
+
+// Animation Client Variables
+float scoreboardAnimTimer = 0.0f;
+const float scoreboardAnimDuration = 1.5f; // seconds
 
 #pragma endregion
 
@@ -316,12 +321,29 @@ void RenderScoreboardText(int Location = 0)
         });
 
     // Header
-    const char* headerText = "Scoreboard";
+    const char* headerText = "";
+
+    if (Location == 1) {
+       headerText = "Final Scoreboard";
+    }
+    else {
+       headerText = "Scoreboard";
+    }
+ 
     f32 w = 1.0f, h = 1.0f;
     AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
 
     // Center Y for win screen display
-    float centerYOffset = 0.1f; // Manual adjust
+// Center Y for win screen display
+    float startY = 1.2f; // Start off-screen above
+    float endY = 0.1f;   // Final resting Y center offset
+
+    float animT = scoreboardAnimTimer / scoreboardAnimDuration;
+    if (animT > 1.0f) animT = 1.0f;
+
+    float centerYOffset = Lerp(startY, endY, animT);
+
+
     float baseX = (Location == 1) ? -w / 2.0f : 1.0f - w - 0.05f;
     float baseY = (Location == 1) ? centerYOffset : 1.0f - h - 0.05f;
 
@@ -336,7 +358,13 @@ void RenderScoreboardText(int Location = 0)
         uint32_t playerId = entry.first;
         uint32_t score = entry.second;
 
-        std::string line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+        // Customize display for top player
+        std::string line;
+        if (i == 0)  // Top scorer
+            line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+        else
+            line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+
         const char* txt = line.c_str();
         f32 lineW = 1.0f, lineH = 1.0f;
         AEGfxGetPrintSize(pFont, txt, 0.5f, &lineW, &lineH);
@@ -344,8 +372,13 @@ void RenderScoreboardText(int Location = 0)
         float textX = (Location == 1) ? -lineW / 2.0f : 1.0f - lineW - 0.05f;
         float textY = baseY - ((i + 1) * 0.07f);
 
-        AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1, 1, 1, 1);
+        // Set color: gold for winner, white for others
+        if (i == 0)
+            AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1.0f, 0.84f, 0.0f, 1);  // Gold
+        else
+            AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1, 1, 1, 1);
     }
+
 }
 
 
@@ -701,6 +734,21 @@ void UpdateRemoteInterpolation(float dt)
 void Render()
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
+    // Render Fullscreen Background
+    {
+        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
+        float bgWidth = 1600.0f;
+        float bgHeight = 900.0f;
+        AEMtx33Scale(&scaleMtx, bgWidth, bgHeight);
+        AEMtx33Rot(&rotMtx, 0.0f);
+        AEMtx33Trans(&transMtx, 0.0f, 0.0f);
+        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
+        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
+        AEGfxTextureSet(BackgroundTexture, 0, 0);
+        AEGfxSetTransform(finalMtx.m);
+        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
+    }
+
 
     // Render local player.
     {
@@ -788,6 +836,21 @@ void Render()
 void RenderWinScreen()
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
+
+    // Render Fullscreen Background
+    {
+        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
+        float bgWidth = 1600.0f;
+        float bgHeight = 900.0f;
+        AEMtx33Scale(&scaleMtx, bgWidth, bgHeight);
+        AEMtx33Rot(&rotMtx, 0.0f);
+        AEMtx33Trans(&transMtx, 0.0f, 0.0f);
+        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
+        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
+        AEGfxTextureSet(BackgroundTexture, 0, 0);
+        AEGfxSetTransform(finalMtx.m);
+        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
+    }
 
     RenderScoreboardText(1); // 1 Renders to middle, 0 renders top right for in-game
 }
@@ -890,6 +953,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AsteroidTexture = AEGfxTextureLoad("Assets/PlanetTexture.png");
     PlayerTexture = AEGfxTextureLoad("Assets/Player.png");
     BulletTexture = AEGfxTextureLoad("Assets/Fire.png");
+    BackgroundTexture = AEGfxTextureLoad("Assets/Background.jpg");
     pFont = AEGfxCreateFont("Assets/liberation-mono.ttf", 72); // load in font
 
     bool gGameRunning = true;
@@ -915,6 +979,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             break;
 
         case GameState::Win:
+            scoreboardAnimTimer += dt; // Advance animation
+            if (scoreboardAnimTimer > scoreboardAnimDuration)
+                scoreboardAnimTimer = scoreboardAnimDuration;
             RenderWinScreen();
             break;
 
@@ -931,6 +998,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AEGfxTextureUnload(AsteroidTexture);
     AEGfxTextureUnload(PlayerTexture);
     AEGfxTextureUnload(BulletTexture);
+    AEGfxTextureUnload(BackgroundTexture);
     AEGfxDestroyFont(pFont); //Unload font
     AESysExit();
 
