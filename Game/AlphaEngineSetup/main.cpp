@@ -25,6 +25,8 @@
 #include <cstring>
 #include <cmath>
 #include <mutex>
+#include <map>
+#include <algorithm>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -35,6 +37,7 @@ constexpr int BUFFER_SIZE = 1024;
 constexpr int MAX_REMOTE_OBJECTS = 4000;  // Objects coming from the server.
 constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
+constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
 
 #pragma region Helper Func
  // ----------------------------------------------------------------------
@@ -55,7 +58,11 @@ enum PacketType : uint8_t
     GAME_UPDATE = 0x03,
     PLAYER_UPDATE = 0x04,
     ACK = 0x05,
-    BULLET_SPAWN = 0x06  // New packet type for bullet spawning.
+    BULLET_SPAWN = 0x06,  // New packet type for bullet spawning.
+    // Score packets
+    SCORE_INCREMENT = 0x07,
+    SCORE_UPDATE = 0x08,
+    FINAL_SCOREBOARD = 0x09
 };
 
 #pragma pack(push, 1)
@@ -119,6 +126,23 @@ struct GameUpdatePacket {
     GameObjectData objects[MAX_REMOTE_OBJECTS];
 };
 
+struct ScoreIncrementPacket {
+    uint8_t type = SCORE_INCREMENT;
+    uint32_t playerId;
+    uint32_t increment;
+};
+
+struct PlayerScore {
+    uint32_t playerId;
+    uint32_t score;
+};
+
+struct ScoreUpdatePacket {
+    uint8_t type = SCORE_UPDATE;
+    uint32_t scoreCount;
+    PlayerScore scores[MAX_PLAYERS];
+};
+
 #pragma pack(pop)
 #pragma endregion
 
@@ -131,6 +155,11 @@ std::atomic<bool> running{ true };
 uint32_t myPlayerId = 0;
 SOCKET udpSocket = INVALID_SOCKET;
 sockaddr_in serverAddr{};
+
+// Score variables
+std::map<uint32_t, uint32_t> gScoreBoard;
+std::mutex gScoreMutex;
+
 
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
@@ -177,6 +206,7 @@ AEGfxVertexList* pMesh = nullptr;
 AEGfxTexture* AsteroidTexture = nullptr;
 AEGfxTexture* PlayerTexture = nullptr;
 AEGfxTexture* BulletTexture = nullptr;
+s8	pFont;
 
 #pragma endregion
 
@@ -230,6 +260,71 @@ void SpawnBullet()
 
 #pragma endregion
 
+#pragma region Score Logic
+
+// ----------------------------------------------------------------------
+//  Score Increment Function
+// ----------------------------------------------------------------------
+void ReportScoreUpdate(uint32_t playerId, uint32_t points)
+{
+    ScoreIncrementPacket pkt;
+    pkt.type = SCORE_INCREMENT;
+    pkt.playerId = playerId;
+    pkt.increment = points;
+
+    int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+        reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
+    if (sent == SOCKET_ERROR) {
+        std::cerr << "[ERROR] sendto SCORE_INCREMENT failed: " << WSAGetLastError() << std::endl;
+    }
+}
+
+// ----------------------------------------------------------------------
+//  Scoreboard render function
+// ----------------------------------------------------------------------
+void RenderScoreboardText()
+{
+    // Header
+    const char* headerText = "Scoreboard";
+    f32 w = 1.0f, h = 1.0f;
+    AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
+    AEGfxPrint(pFont, headerText, 1.0f - w - 0.05f, 1.0f - h - 0.05f, 0.5f, 1, 1, 1, 1);
+
+    // Lock and copy the current scoreboard
+    std::vector<std::pair<uint32_t, uint32_t>> sortedScores;
+    {
+        std::lock_guard<std::mutex> lock(gScoreMutex);
+        sortedScores.assign(gScoreBoard.begin(), gScoreBoard.end());
+    }
+
+    // Sort by score (descending)
+    std::sort(sortedScores.begin(), sortedScores.end(),
+        [](const auto& a, const auto& b) {
+            return a.second > b.second;
+        });
+
+    // Render top N players
+    const int maxEntries = 6;
+    int entryCount = static_cast<int>(sortedScores.size());
+    for (int i = 0; i < ((maxEntries < entryCount) ? maxEntries : entryCount); ++i)
+    {
+        const auto& entry = sortedScores[i];
+        uint32_t playerId = entry.first;
+        uint32_t score = entry.second;
+
+        std::string line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+        const char* txt = line.c_str();
+        f32 lineW = 1.0f, lineH = 1.0f;
+        AEGfxGetPrintSize(pFont, txt, 0.5f, &lineW, &lineH);
+
+        AEGfxPrint(pFont, txt, 1.0f - lineW - 0.05f, 1.0f - lineH - 0.05f - ((i + 1) * 0.07f), 0.5f, 1, 1, 1, 1);
+    }
+
+
+}
+
+
+#pragma end
 #pragma region Update Logic
 // ----------------------------------------------------------------------
 // UpdateLocalSimulation: Updates local simulation (player and local entities).
@@ -305,6 +400,10 @@ void UpdateLocalSimulation(float dt)
         SpawnBullet();
     }
 
+    //Score increment
+    if (AEInputCheckTriggered(AEVK_1)) {
+        ReportScoreUpdate(myPlayerId, 10);  // +10 points test
+    }
     // Here you could add more input-handling for other local-spawnable entities.
 }
 #pragma endregion
@@ -370,6 +469,23 @@ void ReceiveThread(SOCKET socket)
                 remoteIndex++;
             }
             gRemoteCount.store(remoteIndex);
+        }
+        else if (packetType == SCORE_UPDATE)
+        {
+            ScoreUpdatePacket* pkt = reinterpret_cast<ScoreUpdatePacket*>(buffer);
+            std::lock_guard<std::mutex> lock(gScoreMutex);
+            gScoreBoard.clear();
+            for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
+                gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
+            }
+
+            // Optional: Console debug display
+            std::cout << "\n== LIVE SCOREBOARD ==\n";
+            for (const auto& pair : gScoreBoard) {
+                std::cout << "Player " << pair.first << ": " << pair.second << "\n";
+            }
+
+            std::cout << "=====================\n";
         }
     }
 }
@@ -546,6 +662,8 @@ void Render()
         AEGfxSetTransform(finalMtx.m);
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
+
+    RenderScoreboardText();
 }
 #pragma endregion
 
@@ -646,6 +764,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AsteroidTexture = AEGfxTextureLoad("Assets/PlanetTexture.png");
     PlayerTexture = AEGfxTextureLoad("Assets/Player.png");
     BulletTexture = AEGfxTextureLoad("Assets/Fire.png");
+    pFont = AEGfxCreateFont("Assets/liberation-mono.ttf", 72); // load in font
 
     bool gGameRunning = true;
     while (gGameRunning)
@@ -677,7 +796,9 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     AEGfxTextureUnload(AsteroidTexture);
     AEGfxTextureUnload(PlayerTexture);
     AEGfxTextureUnload(BulletTexture);
+    AEGfxDestroyFont(pFont); //Unload font
     AESysExit();
+
 
     running = false;
     if (recvThread.joinable())
