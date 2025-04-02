@@ -9,11 +9,12 @@
   \date   19 March 2025
   \brief
          This file implements the server for an asteroid shooter.
-         It receives JOIN_REQUEST and PLAYER_UPDATE packets from clients,
-         updates the master game state (players, asteroids, bullets, etc.),
-         and periodically broadcasts a GAME_UPDATE packet to all connected clients.
-         The server does not simulate player movement; it only relays the playership's
-         position and rotation as received from the clients.
+         It receives JOIN_REQUEST, PLAYER_UPDATE, and BULLET_SPAWN packets
+         from clients, updates the master game state (players, asteroids,
+         bullets, etc.), and periodically broadcasts a GAME_UPDATE packet
+         to all connected clients. The server relays the playership's state
+         as received from the clients. Velocity fields have been added to allow
+         more accurate extrapolation.
 
          Copyright (C) 2025 DigiPen Institute of Technology.
 */
@@ -56,7 +57,8 @@ enum PacketType : uint8_t
     JOIN_ACCEPT = 0x02,
     GAME_UPDATE = 0x03,
     PLAYER_UPDATE = 0x04,
-    ACK = 0x05
+    ACK = 0x05,
+    BULLET_SPAWN = 0x06  // New packet type for bullet spawn.
 };
 
 #pragma pack(push, 1)
@@ -69,32 +71,46 @@ struct JoinAcceptPacket {
     uint32_t playerId;
 };
 
-// New packet sent by the client containing its latest position and rotation.
+// Updated PLAYER_UPDATE packet includes velocity.
 struct PlayerUpdatePacket {
     uint8_t type = PLAYER_UPDATE;
     uint32_t playerId;
     float pos_x;
     float pos_y;
-    float angle;  // Orientation (in radians) for rendering
+    float angle;   // Orientation (in radians)
+    float vel_x;   // Linear velocity X
+    float vel_y;   // Linear velocity Y
 };
 
-//
-// Structure for sending game updates.
-// The first field is the number of game objects that follow, then an array of object data.
-struct GameObjectData {
-    uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet
+// New BULLET_SPAWN packet: contains bullet type, spawn position, velocity, and damage.
+struct BulletSpawnPacket {
+    uint8_t type = BULLET_SPAWN;
+    uint32_t playerId;   // Owner of the bullet.
+    uint8_t bulletType;  // e.g., 0 = standard.
     float pos_x;
     float pos_y;
-    float rotation; // For players, this is the angle (as updated by the client)
+    float vel_x;
+    float vel_y;
+    float damage;
+};
+
+// Updated GameObjectData includes velocity fields.
+struct GameObjectData {
+    uint8_t objectType; // 0=Player, 1=Asteroid, 2=Bullet.
+    uint32_t playerId;  // Valid for players; 0 for others.
+    float pos_x;
+    float pos_y;
+    float rotation;     // For players, this is the angle.
     float scale;
+    float vel_x;
+    float vel_y;
 };
 
 struct GameUpdatePacket {
     uint8_t type = GAME_UPDATE;
     uint32_t objectCount;
-    // Followed by an array of GameObjectData (variable length)
-    // (We build this packet dynamically.)
-    GameObjectData objects[4000]; // Not used in transmission; legacy placeholder.
+    // Followed by an array of GameObjectData.
+    GameObjectData objects[4000]; // Legacy placeholder.
 };
 #pragma pack(pop)
 
@@ -107,12 +123,14 @@ enum ObjectType {
     Bullet
 };
 
+// Extended PlayerEntity now has velocity fields.
 struct PlayerEntity {
     uint32_t playerId;
     float pos_x, pos_y;
-    float rotation;      // Angle (in radians) for rendering the ship
+    float rotation;  // Angle (in radians)
     float scale;
     float health;
+    float vel_x, vel_y;
 };
 
 struct AsteroidEntity {
@@ -123,19 +141,21 @@ struct AsteroidEntity {
     int health;
 };
 
+// Updated BulletEntity now includes damage.
 struct BulletEntity {
     uint32_t ownerId;
     float pos_x, pos_y;
     float rotation;
     float scale;
     float vel_x, vel_y;
+    float damage;
 };
 
 //---------------------------------------------------------------------------------
 // Global State and Synchronization
 //---------------------------------------------------------------------------------
 std::mutex clientsMutex;
-std::vector<sockaddr_in> clientAddresses;  // one per client
+std::vector<sockaddr_in> clientAddresses;  // One per client.
 std::atomic<uint32_t> nextPlayerId{ 1 };
 
 std::mutex gameStateMutex;
@@ -145,7 +165,6 @@ std::vector<BulletEntity> bullets;
 
 std::atomic<bool> running{ true };
 
-// Global UDP socket for sending broadcast messages.
 SOCKET g_serverSocket = INVALID_SOCKET;
 
 // Helper function to compare two sockaddr_in addresses.
@@ -158,6 +177,7 @@ bool addressesEqual(const sockaddr_in& a, const sockaddr_in& b)
 // Game Logic Functions
 //---------------------------------------------------------------------------------
 
+// Spawns an asteroid with random properties.
 void spawnAsteroid()
 {
     AsteroidEntity asteroid;
@@ -174,57 +194,56 @@ void spawnAsteroid()
     asteroids.push_back(asteroid);
 }
 
-// The server no longer computes player physics.
-// It simply relays the updated player states as received from the clients.
+// Updates the game state by moving asteroids, bullets, etc.
 void updateGameState(float dt)
 {
     std::lock_guard<std::mutex> lock(gameStateMutex);
     float windowWidth = 1600.0f;
     float windowHeight = 900.0f;
 
-    // Asteroids update.
+    // Update asteroids.
     for (auto& asteroid : asteroids)
     {
         asteroid.pos_x += asteroid.vel_x * dt;
         asteroid.pos_y += asteroid.vel_y * dt;
-
-        // Wrap horizontally.
         if (asteroid.pos_x < -windowWidth / 2 - asteroid.scale / 2)
             asteroid.pos_x += windowWidth + asteroid.scale;
         else if (asteroid.pos_x > windowWidth / 2 + asteroid.scale / 2)
             asteroid.pos_x -= windowWidth + asteroid.scale;
-
-        // Wrap vertically.
         if (asteroid.pos_y < -windowHeight / 2 - asteroid.scale / 2)
             asteroid.pos_y += windowHeight + asteroid.scale;
         else if (asteroid.pos_y > windowHeight / 2 + asteroid.scale / 2)
             asteroid.pos_y -= windowHeight + asteroid.scale;
     }
-    // Bullets update.
+    // Update bullets.
     for (auto& bullet : bullets)
     {
         bullet.pos_x += bullet.vel_x * dt;
         bullet.pos_y += bullet.vel_y * dt;
-        // (Remove bullets if off-screen, etc.)
+        // Optionally remove bullets if off-screen.
     }
-    // Player entities are updated solely by incoming network updates.
+    // Player entities are updated solely from PLAYER_UPDATE packets.
 }
 
+// Broadcasts the current game state to all connected clients.
 void broadcastGameState()
 {
     std::vector<GameObjectData> gameObjects;
-
     {
         std::lock_guard<std::mutex> lock(gameStateMutex);
-        // Pack player entities.
+        // Pack players.
         for (const auto& kv : players)
         {
+            const PlayerEntity& p = kv.second;
             GameObjectData data;
             data.objectType = static_cast<uint8_t>(Player);
-            data.pos_x = kv.second.pos_x;
-            data.pos_y = kv.second.pos_y;
-            data.rotation = kv.second.rotation; // Use the client-updated rotation.
-            data.scale = kv.second.scale;
+            data.playerId = p.playerId;
+            data.pos_x = p.pos_x;
+            data.pos_y = p.pos_y;
+            data.rotation = p.rotation;
+            data.scale = p.scale;
+            data.vel_x = p.vel_x;
+            data.vel_y = p.vel_y;
             gameObjects.push_back(data);
         }
         // Pack asteroids.
@@ -232,10 +251,13 @@ void broadcastGameState()
         {
             GameObjectData data;
             data.objectType = static_cast<uint8_t>(Asteroid);
+            data.playerId = 0;
             data.pos_x = ast.pos_x;
             data.pos_y = ast.pos_y;
             data.rotation = ast.rotation;
             data.scale = ast.scale;
+            data.vel_x = ast.vel_x;
+            data.vel_y = ast.vel_y;
             gameObjects.push_back(data);
         }
         // Pack bullets.
@@ -243,73 +265,81 @@ void broadcastGameState()
         {
             GameObjectData data;
             data.objectType = static_cast<uint8_t>(Bullet);
+            data.playerId = b.ownerId;
             data.pos_x = b.pos_x;
             data.pos_y = b.pos_y;
             data.rotation = b.rotation;
             data.scale = b.scale;
+            data.vel_x = b.vel_x;
+            data.vel_y = b.vel_y;
             gameObjects.push_back(data);
         }
     }
 
-    // Determine the packet size.
-    // Header consists of: type (1 byte) and objectCount (4 bytes)
     size_t headerSize = sizeof(uint8_t) + sizeof(uint32_t);
     size_t objectsSize = gameObjects.size() * sizeof(GameObjectData);
     size_t packetSize = headerSize + objectsSize;
-
-    // Create a dynamic buffer to hold the packet.
     std::vector<char> packetBuffer(packetSize);
-
-    // Write the header.
     uint8_t packetType = GAME_UPDATE;
     uint32_t objectCount = static_cast<uint32_t>(gameObjects.size());
     memcpy(packetBuffer.data(), &packetType, sizeof(packetType));
     memcpy(packetBuffer.data() + sizeof(packetType), &objectCount, sizeof(objectCount));
-
-    // Write the object data if any.
     if (!gameObjects.empty())
     {
         memcpy(packetBuffer.data() + headerSize, gameObjects.data(), objectsSize);
     }
 
-    // Send the packet to every connected client.
     std::lock_guard<std::mutex> lock(clientsMutex);
-    for (const auto& addr : clientAddresses) {
+    for (const auto& addr : clientAddresses)
+    {
         int bytesSent = sendto(g_serverSocket,
             packetBuffer.data(),
             static_cast<int>(packetSize),
             0,
             reinterpret_cast<const sockaddr*>(&addr),
             sizeof(addr));
-        if (bytesSent == SOCKET_ERROR) {
+        if (bytesSent == SOCKET_ERROR)
+        {
             std::cerr << "[ERROR] GAME_UPDATE sendto failed: " << WSAGetLastError() << std::endl;
         }
     }
 }
 
+// Main game loop that updates game state and broadcasts it.
 void gameLoop()
 {
-    const float dt = UPDATE_RATE;
-    while (running) {
-        auto start = std::chrono::high_resolution_clock::now();
-        updateGameState(dt);
-        broadcastGameState();
-        // For demonstration, spawn an asteroid every 5 seconds.
-        static float spawnTimer = 0.0f;
-        spawnTimer += dt;
-        if (spawnTimer >= 5.0f) {
-            spawnAsteroid();
-            spawnTimer = 0.0f;
+    const float dtFixed = UPDATE_RATE;
+    float accumulator = 0.0f;
+    auto previousTime = std::chrono::high_resolution_clock::now();
+
+    while (running)
+    {
+        auto currentTime = std::chrono::high_resolution_clock::now();
+        std::chrono::duration<float> deltaTime = currentTime - previousTime;
+        previousTime = currentTime;
+        accumulator += deltaTime.count();
+
+        while (accumulator >= dtFixed)
+        {
+            updateGameState(dtFixed);
+            broadcastGameState();
+
+            // Spawn an asteroid every 5 seconds.
+            static float spawnTimer = 0.0f;
+            spawnTimer += dtFixed;
+            if (spawnTimer >= 5.0f)
+            {
+                spawnAsteroid();
+                spawnTimer = 0.0f;
+            }
+            accumulator -= dtFixed;
         }
-        auto end = std::chrono::high_resolution_clock::now();
-        std::chrono::duration<float> elapsed = end - start;
-        if (elapsed.count() < dt)
-            std::this_thread::sleep_for(std::chrono::duration<float>(dt) - elapsed);
+        std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
 
 //---------------------------------------------------------------------------------
-// Network (UDP) Receive Thread
+// Network Receive Loop for Server
 //---------------------------------------------------------------------------------
 void serverReceiveLoop(SOCKET serverSocket)
 {
@@ -324,11 +354,10 @@ void serverReceiveLoop(SOCKET serverSocket)
         if (bytesReceived <= 0)
             continue;
 
-        uint8_t packetType = buffer[0];
+        uint8_t packetType = static_cast<uint8_t>(buffer[0]);
         if (packetType == JOIN_REQUEST)
         {
             std::lock_guard<std::mutex> lock(clientsMutex);
-            // Check if this client is already connected.
             bool exists = false;
             for (const auto& addr : clientAddresses)
             {
@@ -338,15 +367,16 @@ void serverReceiveLoop(SOCKET serverSocket)
                     break;
                 }
             }
-            if (exists) continue;
-            if (clientAddresses.size() >= MAX_PLAYERS) {
+            if (exists)
+                continue;
+            if (clientAddresses.size() >= MAX_PLAYERS)
+            {
                 std::cout << "[WARN] Max players reached. Ignoring join request." << std::endl;
                 continue;
             }
             uint32_t assignedId = nextPlayerId++;
             clientAddresses.push_back(clientAddr);
 
-            // Create a new player entity with default values.
             {
                 std::lock_guard<std::mutex> gameLock(gameStateMutex);
                 PlayerEntity newPlayer;
@@ -356,6 +386,8 @@ void serverReceiveLoop(SOCKET serverSocket)
                 newPlayer.rotation = 0.0f;
                 newPlayer.scale = 100.0f;
                 newPlayer.health = 100.0f;
+                newPlayer.vel_x = 0.0f;
+                newPlayer.vel_y = 0.0f;
                 players[assignedId] = newPlayer;
             }
 
@@ -370,18 +402,57 @@ void serverReceiveLoop(SOCKET serverSocket)
         }
         else if (packetType == PLAYER_UPDATE)
         {
-            // Client sends its own updated position and rotation.
             PlayerUpdatePacket* updatePkt = reinterpret_cast<PlayerUpdatePacket*>(buffer);
             std::lock_guard<std::mutex> lock(gameStateMutex);
             auto it = players.find(updatePkt->playerId);
-            if (it != players.end()) {
+            if (it != players.end())
+            {
                 it->second.pos_x = updatePkt->pos_x;
                 it->second.pos_y = updatePkt->pos_y;
                 it->second.rotation = updatePkt->angle;
+                it->second.vel_x = updatePkt->vel_x;
+                it->second.vel_y = updatePkt->vel_y;
             }
             std::cout << "[UPDATE] Player " << updatePkt->playerId
                 << " pos: (" << updatePkt->pos_x << ", " << updatePkt->pos_y << ")"
                 << " angle: " << updatePkt->angle << std::endl;
+        }
+        else if (packetType == BULLET_SPAWN)
+        {
+            // Process bullet spawn packet.
+            // Define the bullet spawn structure here to match the client's structure.
+            struct BulletSpawnPacket {
+                uint8_t type;
+                uint32_t playerId;
+                uint8_t bulletType;
+                float pos_x;
+                float pos_y;
+                float vel_x;
+                float vel_y;
+                float damage;
+            };
+
+            BulletSpawnPacket* bulletPkt = reinterpret_cast<BulletSpawnPacket*>(buffer);
+            BulletEntity newBullet;
+            newBullet.ownerId = bulletPkt->playerId;
+            newBullet.pos_x = bulletPkt->pos_x;
+            newBullet.pos_y = bulletPkt->pos_y;
+            newBullet.vel_x = bulletPkt->vel_x;
+            newBullet.vel_y = bulletPkt->vel_y;
+            newBullet.damage = bulletPkt->damage;
+            // Set bullet scale (e.g., 10 units).
+            newBullet.scale = 10.0f;
+            // Compute bullet rotation from its velocity.
+            newBullet.rotation = atan2f(newBullet.vel_y, newBullet.vel_x);
+
+            {
+                std::lock_guard<std::mutex> lock(gameStateMutex);
+                bullets.push_back(newBullet);
+            }
+
+            std::cout << "[BULLET SPAWN] Player " << bulletPkt->playerId
+                << " spawned bullet at (" << bulletPkt->pos_x << ", " << bulletPkt->pos_y << ")"
+                << " damage: " << bulletPkt->damage << std::endl;
         }
     }
 }
@@ -392,15 +463,16 @@ void serverReceiveLoop(SOCKET serverSocket)
 int main()
 {
     WSADATA wsaData;
-    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0) {
-        std::cerr << "WSAStartup failed." << std::endl;
+    if (WSAStartup(MAKEWORD(2, 2), &wsaData) != 0)
+    {
+        std::cerr << "[ERROR] WSAStartup failed." << std::endl;
         return 1;
     }
 
     SOCKET serverSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
     if (serverSocket == INVALID_SOCKET)
     {
-        std::cerr << "Failed to create UDP socket." << std::endl;
+        std::cerr << "[ERROR] Failed to create UDP socket." << std::endl;
         WSACleanup();
         return 1;
     }
@@ -431,7 +503,7 @@ int main()
 
     if (bind(serverSocket, reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr)) == SOCKET_ERROR)
     {
-        std::cerr << "Bind failed." << std::endl;
+        std::cerr << "[ERROR] Bind failed." << std::endl;
         closesocket(serverSocket);
         WSACleanup();
         return 1;
