@@ -36,6 +36,16 @@
 
 #pragma comment(lib, "ws2_32.lib")
 
+#pragma region Helper Func
+ //---------------------------------------------------------------------------------
+ // Helper Functions
+ //---------------------------------------------------------------------------------
+bool addressesEqual(const sockaddr_in& a, const sockaddr_in& b)
+{
+    return (a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port);
+}
+#pragma endregion
+
  //---------------------------------------------------------------------------------
  // Network and Server Constants
  //---------------------------------------------------------------------------------
@@ -44,6 +54,7 @@ constexpr int MAX_PLAYERS = 4;
 constexpr int BUFFER_SIZE = 1024;
 constexpr float UPDATE_RATE = 0.033f; // ~30 updates per second
 
+#pragma region Packets Declaration
 //---------------------------------------------------------------------------------
 // Packet Types
 //---------------------------------------------------------------------------------
@@ -106,7 +117,9 @@ struct GameUpdatePacket {
     GameObjectData objects[4000]; // Legacy placeholder.
 };
 #pragma pack(pop)
+#pragma endregion
 
+#pragma region Entity DECLARATION
 //---------------------------------------------------------------------------------
 // Game Entity Structures
 //---------------------------------------------------------------------------------
@@ -141,7 +154,9 @@ struct BulletEntity {
     float vel_x, vel_y;
     float damage;
 };
+#pragma endregion
 
+#pragma region VARIABLES DECLARATION
 //---------------------------------------------------------------------------------
 // Global State and Synchronization
 //---------------------------------------------------------------------------------
@@ -158,14 +173,9 @@ std::atomic<bool> running{ true };
 
 SOCKET g_serverSocket = INVALID_SOCKET;
 
-//---------------------------------------------------------------------------------
-// Helper Functions
-//---------------------------------------------------------------------------------
-bool addressesEqual(const sockaddr_in& a, const sockaddr_in& b)
-{
-    return (a.sin_addr.s_addr == b.sin_addr.s_addr && a.sin_port == b.sin_port);
-}
+#pragma endregion
 
+#pragma region Spawning/Relaying Entities
 void spawnAsteroid()
 {
     AsteroidEntity asteroid;
@@ -182,6 +192,53 @@ void spawnAsteroid()
     asteroids.push_back(asteroid);
 }
 
+void relayBulletSpawn(const BulletSpawnPacket* bulletPkt)
+{
+    // Relay the bullet spawn packet immediately to all clients.
+    std::lock_guard<std::mutex> lock(clientsMutex);
+    for (const auto& addr : clientAddresses)
+    {
+        int bytesSent = sendto(g_serverSocket,
+            reinterpret_cast<const char*>(bulletPkt),
+            sizeof(BulletSpawnPacket),
+            0,
+            reinterpret_cast<const sockaddr*>(&addr),
+            sizeof(addr));
+        if (bytesSent == SOCKET_ERROR)
+        {
+            std::cerr << "[ERROR] BULLET_SPAWN relay sendto failed: " << WSAGetLastError() << std::endl;
+        }
+    }
+}
+
+void handleBulletSpawn(const BulletSpawnPacket* bulletPkt)
+{
+    // Create the bullet entity in the game state.
+    BulletEntity newBullet;
+    newBullet.ownerId = bulletPkt->playerId;
+    newBullet.pos_x = bulletPkt->pos_x;
+    newBullet.pos_y = bulletPkt->pos_y;
+    newBullet.vel_x = bulletPkt->vel_x;
+    newBullet.vel_y = bulletPkt->vel_y;
+    newBullet.damage = bulletPkt->damage;
+    newBullet.scale = 10.0f; // Example scale.
+    newBullet.rotation = atan2f(newBullet.vel_y, newBullet.vel_x);
+
+    {
+        std::lock_guard<std::mutex> lock(gameStateMutex);
+        bullets.push_back(newBullet);
+    }
+    std::cout << "[BULLET SPAWN] Player " << bulletPkt->playerId
+        << " spawned bullet at (" << bulletPkt->pos_x << ", " << bulletPkt->pos_y << ")"
+        << " damage: " << bulletPkt->damage << std::endl;
+    // Relay the bullet spawn only once.
+    relayBulletSpawn(bulletPkt);
+}
+
+#pragma endregion
+
+#pragma region Game State Handling & Sending 
+// This function is meant to be renamed or could be repurposed (Encapsulate functionality)
 void updateGameState(float dt)
 {
     std::lock_guard<std::mutex> lock(gameStateMutex);
@@ -279,6 +336,7 @@ void broadcastGameState()
     }
 }
 
+//This is essentially Update()
 void gameLoop()
 {
     const float dtFixed = UPDATE_RATE;
@@ -299,6 +357,8 @@ void gameLoop()
             broadcastGameState();
 
             spawnTimer += dtFixed;
+
+            // Can try to make a Game State Spawn function that handles calling the spawning of entities
             if (spawnTimer >= 5.0f)
             {
                 spawnAsteroid();
@@ -309,7 +369,9 @@ void gameLoop()
         std::this_thread::sleep_for(std::chrono::milliseconds(1));
     }
 }
+#pragma endregion
 
+#pragma region Packet Handling
 //---------------------------------------------------------------------------------
 // Packet Handling Functions
 //---------------------------------------------------------------------------------
@@ -377,49 +439,6 @@ void handlePlayerUpdate(const PlayerUpdatePacket* updatePkt)
         << " angle: " << updatePkt->angle << std::endl;
 }
 
-void relayBulletSpawn(const BulletSpawnPacket* bulletPkt)
-{
-    // Relay the bullet spawn packet immediately to all clients.
-    std::lock_guard<std::mutex> lock(clientsMutex);
-    for (const auto& addr : clientAddresses)
-    {
-        int bytesSent = sendto(g_serverSocket,
-            reinterpret_cast<const char*>(bulletPkt),
-            sizeof(BulletSpawnPacket),
-            0,
-            reinterpret_cast<const sockaddr*>(&addr),
-            sizeof(addr));
-        if (bytesSent == SOCKET_ERROR)
-        {
-            std::cerr << "[ERROR] BULLET_SPAWN relay sendto failed: " << WSAGetLastError() << std::endl;
-        }
-    }
-}
-
-void handleBulletSpawn(const BulletSpawnPacket* bulletPkt)
-{
-    // Create the bullet entity in the game state.
-    BulletEntity newBullet;
-    newBullet.ownerId = bulletPkt->playerId;
-    newBullet.pos_x = bulletPkt->pos_x;
-    newBullet.pos_y = bulletPkt->pos_y;
-    newBullet.vel_x = bulletPkt->vel_x;
-    newBullet.vel_y = bulletPkt->vel_y;
-    newBullet.damage = bulletPkt->damage;
-    newBullet.scale = 10.0f; // Example scale.
-    newBullet.rotation = atan2f(newBullet.vel_y, newBullet.vel_x);
-
-    {
-        std::lock_guard<std::mutex> lock(gameStateMutex);
-        bullets.push_back(newBullet);
-    }
-    std::cout << "[BULLET SPAWN] Player " << bulletPkt->playerId
-        << " spawned bullet at (" << bulletPkt->pos_x << ", " << bulletPkt->pos_y << ")"
-        << " damage: " << bulletPkt->damage << std::endl;
-    // Relay the bullet spawn only once.
-    relayBulletSpawn(bulletPkt);
-}
-
 //---------------------------------------------------------------------------------
 // Network Receive Loop
 //---------------------------------------------------------------------------------
@@ -463,6 +482,10 @@ void serverReceiveLoop(SOCKET serverSocket)
     }
 }
 
+
+#pragma endregion
+
+#pragma region DO NOT TOUCH
 //---------------------------------------------------------------------------------
 // Main Entry Point
 //---------------------------------------------------------------------------------
@@ -527,3 +550,4 @@ int main()
     WSACleanup();
     return 0;
 }
+#pragma endregion
