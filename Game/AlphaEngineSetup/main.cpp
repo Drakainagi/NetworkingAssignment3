@@ -635,10 +635,10 @@ void ReceiveThread(SOCKET socket)
 
             std::lock_guard<std::mutex> lock(gPoolMutex);
             // Mark entire remote pool as inactive first.
-            for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
-            {
-                gServerEntityPool[i].isActive = false;
-            }
+            //for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS/2; i++)
+            //{
+            //    gServerEntityPool[i].isActive = false;
+            //}
             // Fill pool with new updates.
             uint32_t poolIndex = 0;
             for (uint32_t i = 0; i < count; i++)
@@ -849,12 +849,12 @@ void SendLocalUpdate(int clientId)
 void UpdateRemoteInterpolation(float dt)
 {
     const float lerpFactor = 0.1f;
-    const float posThreshold = 50.0f;
+    const float posThreshold = 500.0f;
     const float extrapolationFactor = 1.0f; // Predict 1 second ahead.
 
     std::lock_guard<std::mutex> lock(gPoolMutex);
     // Process non-bullet remote objects (assumed in first half of pool).
-    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
+    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
     {
         if (!gServerEntityPool[i].isActive) continue;
 
@@ -885,14 +885,16 @@ void UpdateRemoteInterpolation(float dt)
         gRemoteEntities[i].isActive = gServerEntityPool[i].isActive;
     }
 
-    //// Update bullet objects by simply adding velocity to position.
-    //int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
-    //for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
-    //{
-    //    if (!gServerEntityPool[i].isActive) continue;
-    //    gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x * dt;
-    //    gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y * dt;
-    //}
+    // Update bullet objects by simply adding velocity to position.
+    int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
+    for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
+    {
+        if (!gServerEntityPool[i].isActive) 
+            continue;
+        gRemoteEntities[i].pos_x += gServerEntityPool[i].vel_x * dt;
+        gRemoteEntities[i].pos_y += gServerEntityPool[i].vel_y * dt;
+        gRemoteEntities[i].isActive = gServerEntityPool[i].isActive;
+    }
 }
 
 // ----------------------------------------------------------------------
