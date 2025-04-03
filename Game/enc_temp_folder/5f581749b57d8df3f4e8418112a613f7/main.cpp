@@ -854,7 +854,7 @@ void UpdateRemoteInterpolation(float dt)
 
     std::lock_guard<std::mutex> lock(gPoolMutex);
     // Process non-bullet remote objects (assumed in first half of pool).
-    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
+    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
     {
         if (!gServerEntityPool[i].isActive) continue;
 
@@ -885,14 +885,14 @@ void UpdateRemoteInterpolation(float dt)
         gRemoteEntities[i].isActive = gServerEntityPool[i].isActive;
     }
 
-    //// Update bullet objects by simply adding velocity to position.
-    //int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
-    //for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
-    //{
-    //    if (!gServerEntityPool[i].isActive) continue;
-    //    gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x * dt;
-    //    gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y * dt;
-    //}
+    // Update bullet objects by simply adding velocity to position.
+    int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
+    for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
+    {
+        if (!gServerEntityPool[i].isActive) continue;
+        gServerEntityPool[i].pos_x += gServerEntityPool[i].vel_x * dt;
+        gServerEntityPool[i].pos_y += gServerEntityPool[i].vel_y * dt;
+    }
 }
 
 // ----------------------------------------------------------------------
