@@ -1,7 +1,7 @@
 ﻿/*
  *****************************************************************
  *  File:      client.cpp
- *  Author:    Joshua Sim Yue Chen (modified by ChatGPT)
+ *  Author:    Joshua Sim Yue Chen
  *  Brief:     Implements the client for the asteroid shooter.
  *             The client computes its own ship movement using
  *             simplified physics (client-side prediction) and
@@ -38,13 +38,14 @@ constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 4096;
 constexpr int MAX_REMOTE_OBJECTS = 256;  // Objects coming from the server. // Anything above 256 is considered as cached or fake entities that server does not know, hence the mismatch
 constexpr int MAX_LOCAL_ENTITIES = 100;     // Local pool for bullets, power-ups, etc.
-constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10; 
+constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10;
 constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
+constexpr int VICTORY_SCORE = 50; // Client based intended
 
 #pragma region Helper Func
- // ----------------------------------------------------------------------
- // Helper: Linear Interpolation Function
- // ----------------------------------------------------------------------
+// ----------------------------------------------------------------------
+// Helper: Linear Interpolation Function
+// ----------------------------------------------------------------------
 inline float Lerp(float a, float b, float t)
 {
     return a + (b - a) * t;
@@ -53,7 +54,7 @@ inline float Lerp(float a, float b, float t)
 // ----------------------------------------------------------------------
 // Helper: Collision Check (Sphere to sphere) function
 // ----------------------------------------------------------------------
-bool checkSphereCollision(float x1, float y1, float r1, float x2, float y2, float r2) 
+bool checkSphereCollision(float x1, float y1, float r1, float x2, float y2, float r2)
 {
     return (x2 - x1) * (x2 - x1) + (y2 - y1) * (y2 - y1) <= (r1 + r2) * (r1 + r2);
 }
@@ -145,7 +146,7 @@ struct ScoreIncrementPacket {
     uint8_t type = SCORE_INCREMENT;
     uint32_t playerId;
     uint32_t increment;
-    uint32_t asteroidId; 
+    uint32_t asteroidId;
 };
 
 struct PlayerScore {
@@ -177,6 +178,20 @@ sockaddr_in serverAddr{};
 std::map<uint32_t, uint32_t> gScoreBoard;
 std::mutex gScoreMutex;
 
+// Game State 
+enum GameState {
+    Playing,
+    Pause,
+    Win
+};
+
+GameState gameState = Playing; // Defaults allows simulation, etc
+
+
+// Animation Client Variables
+float scoreboardAnimTimer = 0.0f;
+const float scoreboardAnimDuration = 1.5f; // seconds
+
 // Destroyed Asteroids
 std::set<uint32_t> destroyedAsteroidIds;
 std::mutex destroyedMutex;
@@ -184,7 +199,7 @@ std::mutex destroyedMutex;
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
 // ----------------------------------------------------------------------
-struct GameObject 
+struct GameObject
 {
     AEMtx33 transform;  // For rendering.
     float pos_x = 0.0f, pos_y = 0.0f;
@@ -198,7 +213,7 @@ struct GameObject
     bool isActive = true;
 };
 
-enum ObjectType 
+enum ObjectType
 {
     Player,
     Asteroid,
@@ -316,14 +331,9 @@ void ReportScoreUpdate(uint32_t playerId, uint32_t points, uint32_t asteroidInde
 // ----------------------------------------------------------------------
 //  Scoreboard render function
 // ----------------------------------------------------------------------
-void RenderScoreboardText()
-{
-    // Header
-    const char* headerText = "Scoreboard";
-    f32 w = 1.0f, h = 1.0f;
-    AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
-    AEGfxPrint(pFont, headerText, 1.0f - w - 0.05f, 1.0f - h - 0.05f, 0.5f, 1, 1, 1, 1);
 
+void RenderScoreboardText(int Location = 0)
+{
     // Lock and copy the current scoreboard
     std::vector<std::pair<uint32_t, uint32_t>> sortedScores;
     {
@@ -337,6 +347,35 @@ void RenderScoreboardText()
             return a.second > b.second;
         });
 
+    // Header
+    const char* headerText = "";
+
+    if (Location == 1) {
+        headerText = "Final Scoreboard";
+    }
+    else {
+        headerText = "Scoreboard";
+    }
+
+    f32 w = 1.0f, h = 1.0f;
+    AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
+
+    // Center Y for win screen display
+// Center Y for win screen display
+    float startY = 1.2f; // Start off-screen above
+    float endY = 0.1f;   // Final resting Y center offset
+
+    float animT = scoreboardAnimTimer / scoreboardAnimDuration;
+    if (animT > 1.0f) animT = 1.0f;
+
+    float centerYOffset = Lerp(startY, endY, animT);
+
+
+    float baseX = (Location == 1) ? -w / 2.0f : 1.0f - w - 0.05f;
+    float baseY = (Location == 1) ? centerYOffset : 1.0f - h - 0.05f;
+
+    AEGfxPrint(pFont, headerText, baseX, baseY, 0.5f, 1, 1, 1, 1);
+
     // Render top N players
     const int maxEntries = 6;
     int entryCount = static_cast<int>(sortedScores.size());
@@ -346,16 +385,29 @@ void RenderScoreboardText()
         uint32_t playerId = entry.first;
         uint32_t score = entry.second;
 
-        std::string line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+        // Customize display for top player
+        std::string line;
+        if (i == 0)  // Top scorer
+            line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+        else
+            line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+
         const char* txt = line.c_str();
         f32 lineW = 1.0f, lineH = 1.0f;
         AEGfxGetPrintSize(pFont, txt, 0.5f, &lineW, &lineH);
 
-        AEGfxPrint(pFont, txt, 1.0f - lineW - 0.05f, 1.0f - lineH - 0.05f - ((i + 1) * 0.07f), 0.5f, 1, 1, 1, 1);
+        float textX = (Location == 1) ? -lineW / 2.0f : 1.0f - lineW - 0.05f;
+        float textY = baseY - ((i + 1) * 0.07f);
+
+        // Set color: gold for winner, white for others
+        if (i == 0)
+            AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1.0f, 0.84f, 0.0f, 1);  // Gold
+        else
+            AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1, 1, 1, 1);
     }
 
-
 }
+
 #pragma endregion
 
 #pragma region Cleaning/Destroying Objects
@@ -501,14 +553,14 @@ void HandleCollisionChecks()
                     gLocalEntities[j].isActive = false;
 
                     uint32_t asteroidId = gServerEntityPool[i].asteroidId;
-                    
+
                     std::lock_guard<std::mutex> dlock(destroyedMutex);
                     if (destroyedAsteroidIds.count(asteroidId))
                         continue; // Already destroyed
 
                     destroyedAsteroidIds.insert(asteroidId);
                     ReportScoreUpdate(myPlayerId, 10, asteroidId);
-                    
+
 
                     std::cout << "[LOCAL] Asteroid with ID " << asteroidId << " destroyed by local bullet\n";
                 }
@@ -695,20 +747,24 @@ void ReceiveThread(SOCKET socket)
         else if (packetType == SCORE_UPDATE)
         {
             ScoreUpdatePacket* pkt = reinterpret_cast<ScoreUpdatePacket*>(buffer);
+
             std::lock_guard<std::mutex> lock(gScoreMutex);
             gScoreBoard.clear();
+
+            uint32_t highestScore = 0;
             for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
                 gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
+                if (pkt->scores[i].score > highestScore)
+                    highestScore = pkt->scores[i].score;
             }
 
-            // Optional: Console debug display
-            std::cout << "\n== LIVE SCOREBOARD ==\n";
-            for (const auto& pair : gScoreBoard) {
-                std::cout << "Player " << pair.first << ": " << pair.second << "\n";
+            // Win condition check (e.g., 500 points)
+            if (highestScore >= VICTORY_SCORE && gameState == GameState::Playing) {
+                gameState = GameState::Win;
+                std::cout << "[GAME STATE] Game over! A player has reached 500 points.\n";
             }
-            std::cout << "=====================\n";
         }
-        if (packetType == NAME_REJECTED) 
+        if (packetType == NAME_REJECTED)
         {
             std::cout << "[SERVER] Name already taken. Please restart and try a different name.\n";
             running = false; // Optional: stop game loop
@@ -949,6 +1005,14 @@ void Render()
     }
     RenderScoreboardText();
 }
+
+void RenderWinScreen()
+{
+    std::lock_guard<std::mutex> lock(gPoolMutex);
+
+    RenderScoreboardText(1); // 1 Renders to middle, 0 renders top right for in-game
+}
+
 #pragma endregion
 
 #pragma region DO NOT TOUCH
@@ -1064,14 +1128,25 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
 
         float dt = static_cast<float>(AEFrameRateControllerGetFrameTime());
 
-        // Update local simulation (local player and local entities).
-        UpdateLocalSimulation(dt);
-        SendLocalUpdate(myPlayerId);
-        // Interpolate remote entities.
-        UpdateRemoteInterpolation(dt);
-        HandleCollisionChecks();
-        // Render local and remote entities.
-        Render();
+        switch (gameState)
+        {
+        case GameState::Playing:
+            UpdateLocalSimulation(dt);
+            SendLocalUpdate(myPlayerId);
+            UpdateRemoteInterpolation(dt);
+            Render();
+            break;
+
+        case GameState::Win:
+            scoreboardAnimTimer += dt; // Advance animation
+            if (scoreboardAnimTimer > scoreboardAnimDuration)
+                scoreboardAnimTimer = scoreboardAnimDuration;
+            RenderWinScreen();
+            break;
+
+        default:
+            break;
+        }
 
         AESysFrameEnd();
         if (AEInputCheckTriggered(AEVK_ESCAPE) || !AESysDoesWindowExist())
