@@ -515,7 +515,7 @@ void HandleCollisionChecks()
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
 
-    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
+    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
     {
         if (!gRemoteEntities[i].isActive)
             continue;
@@ -563,30 +563,32 @@ void HandleCollisionChecks()
 #pragma endregion
 
 #pragma region With Each Other (different objs from server)
-#if 0
-        for (uint32_t j = 0; j < i; j++) // Prevent self-collision by iterating only to i.
+#if 1
+        //for (uint32_t j = 0; j < i; j++) // Prevent self-collision by iterating only to i.
+        //{
+        //    if (!gServerEntityPool[j].isActive)
+        //        continue;
+
+        //    if (checkSphereCollision(
+        //        gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+        //        gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
+        //    {
+        //        // Handle server object collision
+        //    }
+        //}
+
+        for (uint32_t f = MAX_REMOTE_OBJECTS / 2; f < MAX_REMOTE_OBJECTS; f++)
         {
-            if (!gServerEntityPool[j].isActive)
+            if (gServerEntityPool[f].isActive)
                 continue;
 
             if (checkSphereCollision(
                 gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
-                gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
-            {
-                // Handle server object collision
-            }
-        }
-
-        for (uint32_t j = MAX_REMOTE_OBJECTS / 2; j < MAX_REMOTE_OBJECTS; j++)
-        {
-            if (!gServerEntityPool[j].isActive)
-                continue;
-
-            if (checkSphereCollision(
-                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
-                gServerEntityPool[j].pos_x, gServerEntityPool[j].pos_y, gServerEntityPool[j].scale * 0.5f))
+                gRemoteEntities[f].pos_x, gRemoteEntities[f].pos_y, gRemoteEntities[f].scale * 0.5f))
             {
                 // Handle fake bullet collision
+                //gRemoteEntities[f].isActive = false;
+                //gServerEntityPool[f].isActive = false;
             }
         }
 #endif
@@ -718,6 +720,7 @@ void ReceiveThread(SOCKET socket)
                         {
                             std::lock_guard<std::mutex> lock(gPoolMutex);
                             gServerEntityPool[bulletIndex] = bullet;
+                            gRemoteEntities[bulletIndex] = bullet;
                             std::cout << "[BULLET SPAWN] Added bullet entity at index " << bulletIndex << std::endl;
                         }
                         else
@@ -893,6 +896,9 @@ void UpdateRemoteInterpolation(float dt)
             continue;
         gRemoteEntities[i].pos_x += gServerEntityPool[i].vel_x * dt;
         gRemoteEntities[i].pos_y += gServerEntityPool[i].vel_y * dt;
+        gRemoteEntities[i].rotation = gServerEntityPool[i].rotation;
+        gRemoteEntities[i].scale = gServerEntityPool[i].scale;
+        gRemoteEntities[i].objectType = gServerEntityPool[i].objectType;
         gRemoteEntities[i].isActive = gServerEntityPool[i].isActive;
     }
 }
