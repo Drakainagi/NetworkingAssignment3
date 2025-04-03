@@ -37,7 +37,7 @@ constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 4096;
 constexpr int MAX_REMOTE_OBJECTS = 512;  // Objects coming from the server. // Anything above 256 is considered as cached or fake entities that server does not know, hence the mismatch
-constexpr int MAX_LOCAL_ENTITIES = 100;     // Local pool for bullets, power-ups, etc.
+constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10;
 constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
 constexpr int VICTORY_SCORE = 500; // Client based intended
@@ -550,11 +550,13 @@ void HandleCollisionChecks()
 
                     std::lock_guard<std::mutex> dlock(destroyedMutex);
                     if (destroyedEntityIds.count(entityId))
-                        continue; // Already destroyed
+                        continue;
 
                     destroyedEntityIds.insert(entityId);
-                    ReportScoreUpdate(myPlayerId, 10, entityId);
+                    gServerEntityPool[i].isActive = false;
+                    gRemoteEntities[i].isActive = false;
 
+                    ReportScoreUpdate(myPlayerId, 10, entityId);
                     std::cout << "[LOCAL] Asteroid with ID " << entityId << " destroyed by local bullet\n";
                 }
             }
@@ -640,31 +642,35 @@ void ReceiveThread(SOCKET socket)
             for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS/2; i++)
             {
                 gServerEntityPool[i].isActive = false;
+                gRemoteEntities[i].isActive = false;
             }
             //Fill pool with new updates.
             uint32_t poolIndex = 0;
-            for (uint32_t i = 0; i < count; i++)
-            {
+            for (uint32_t i = 0; i < count; i++) {
                 const GameObjectData& src = update->objects[i];
-                // Skip local player's update.
-                if (src.objectType == ObjectType::Player && src.playerId == myPlayerId)
+
+                // Skip local player & local bullets
+                if ((src.objectType == ObjectType::Player && src.playerId == myPlayerId) ||
+                    (src.objectType == ObjectType::Bullet && src.playerId == myPlayerId))
                     continue;
-                // Skip bullet updates from local player; local bullets are managed locally.
-                if (src.objectType == ObjectType::Bullet && src.playerId == myPlayerId)
-                    continue;
-                if (poolIndex >= MAX_REMOTE_OBJECTS)
+
+                if (poolIndex >= MAX_REMOTE_OBJECTS / 2)
                     break;
 
-                gServerEntityPool[poolIndex].pos_x = src.pos_x;
-                gServerEntityPool[poolIndex].pos_y = src.pos_y;
-                gServerEntityPool[poolIndex].rotation = src.rotation;
-                gServerEntityPool[poolIndex].scale = src.scale;
-                gServerEntityPool[poolIndex].objectType = src.objectType;
-                gServerEntityPool[poolIndex].playerId = src.playerId;
-                gServerEntityPool[poolIndex].vel_x = src.vel_x;
-                gServerEntityPool[poolIndex].vel_y = src.vel_y;
-                gServerEntityPool[poolIndex].isActive = src.isActive; // or simply true if update means active
-                gServerEntityPool[poolIndex].entityId = src.entityId;
+                GameObject& serverObj = gServerEntityPool[poolIndex];
+                serverObj.pos_x = src.pos_x;
+                serverObj.pos_y = src.pos_y;
+                serverObj.rotation = src.rotation;
+                serverObj.scale = src.scale;
+                serverObj.objectType = src.objectType;
+                serverObj.playerId = src.playerId;
+                serverObj.vel_x = src.vel_x;
+                serverObj.vel_y = src.vel_y;
+                serverObj.entityId = src.entityId;
+                serverObj.isActive = src.isActive;
+
+                gRemoteEntities[poolIndex] = serverObj;
+
                 poolIndex++;
             }
         }

@@ -493,7 +493,7 @@ void gameLoop()
             spawnTimer += dtFixed;
 
             // Can try to make a Game State Spawn function that handles calling the spawning of entities
-            if (spawnTimer >= 5.0f)
+            if (spawnTimer >= 2.0f)
             {
                 spawnAsteroid();
                 spawnTimer = 0.0f;
