@@ -252,8 +252,13 @@ const float playerRenderScale = 100.0f;  // For rendering scale.
 
 // AE-Engine mesh and textures
 AEGfxVertexList* pMesh = nullptr;
+AEGfxTexture* Background1Texture = nullptr;
 AEGfxTexture* AsteroidTexture = nullptr;
-AEGfxTexture* PlayerTexture = nullptr;
+AEGfxTexture* PlanetTexture = nullptr;
+AEGfxTexture* Player1Texture = nullptr;
+AEGfxTexture* Player2Texture = nullptr;
+AEGfxTexture* Player3Texture = nullptr;
+AEGfxTexture* Player4Texture = nullptr;
 AEGfxTexture* BulletTexture = nullptr;
 s8	pFont;
 
@@ -311,7 +316,7 @@ void SpawnBullet()
     }
 
     // Spawn bullet locally in the local pool.
-    SpawnLocalEntity(2, pkt.pos_x, pkt.pos_y, pkt.vel_x, pkt.vel_y, playerAngle, 100.0f);
+    SpawnLocalEntity(2, pkt.pos_x, pkt.pos_y, pkt.vel_x, pkt.vel_y, playerAngle, 20.0f);
 }
 
 #pragma endregion
@@ -940,6 +945,21 @@ void Render()
 {
     std::lock_guard<std::mutex> lock(gPoolMutex);
 
+    // Render Background
+    {
+        float windowWidth = 1600.0f;
+        float windowHeight = 900.0f;
+        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
+        AEMtx33Scale(&scaleMtx, windowWidth, windowHeight);
+        AEMtx33Rot(&rotMtx, 0);
+        AEMtx33Trans(&transMtx, 0, 0);
+        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
+        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
+        AEGfxTextureSet(Background1Texture, 0, 0);
+        AEGfxSetTransform(finalMtx.m);
+        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
+    }
+
     // Render local player.
     {
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
@@ -948,7 +968,21 @@ void Render()
         AEMtx33Trans(&transMtx, gLocalPlayer.pos_x, gLocalPlayer.pos_y);
         AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
         AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
-        AEGfxTextureSet(PlayerTexture, 0, 0);
+        switch (gLocalPlayer.playerId)
+        {
+        case 1:
+            AEGfxTextureSet(Player1Texture, 0, 0);
+            break;
+        case 2:
+            AEGfxTextureSet(Player2Texture, 0, 0);
+            break;
+        case 3:
+            AEGfxTextureSet(Player3Texture, 0, 0);
+            break;
+        case 4:
+            AEGfxTextureSet(Player4Texture, 0, 0);
+            break;
+        }
         AEGfxSetTransform(finalMtx.m);
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
@@ -1013,7 +1047,21 @@ void Render()
             AEGfxTextureSet(BulletTexture, 0, 0);
             break;
         default:
-            AEGfxTextureSet(PlayerTexture, 0, 0);
+            switch (gRemoteEntities[i].playerId)
+            {
+            case 1:
+                AEGfxTextureSet(Player1Texture, 0, 0);
+                break;
+            case 2:
+                AEGfxTextureSet(Player2Texture, 0, 0);
+                break;
+            case 3:
+                AEGfxTextureSet(Player3Texture, 0, 0);
+                break;
+            case 4:
+                AEGfxTextureSet(Player4Texture, 0, 0);
+                break;
+            }
             break;
         }
         AEGfxSetTransform(finalMtx.m);
@@ -1127,9 +1175,14 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
         -0.5f, 0.5f, 0xFFFFFFFF, 0.0f, 0.0f);
     pMesh = AEGfxMeshEnd();
 
-    AsteroidTexture = AEGfxTextureLoad("Assets/PlanetTexture.png");
-    PlayerTexture = AEGfxTextureLoad("Assets/Player.png");
-    BulletTexture = AEGfxTextureLoad("Assets/Fire.png");
+    Background1Texture = AEGfxTextureLoad("Assets/Background1.png");
+    AsteroidTexture = AEGfxTextureLoad("Assets/Asteroid.png");
+    PlanetTexture = AEGfxTextureLoad("Assets/PlanetTexture.png");
+    Player1Texture = AEGfxTextureLoad("Assets/Ship1.png");
+    Player2Texture = AEGfxTextureLoad("Assets/Ship2.png");
+    Player3Texture = AEGfxTextureLoad("Assets/Ship3.png");
+    Player4Texture = AEGfxTextureLoad("Assets/Ship4.png");
+    BulletTexture = AEGfxTextureLoad("Assets/Bullet.png");
     pFont = AEGfxCreateFont("Assets/liberation-mono.ttf", 72); // load in font
 
     gGameRunning = true;
@@ -1172,8 +1225,13 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     }
 
     AEGfxMeshFree(pMesh);
+    AEGfxTextureUnload(Background1Texture);
     AEGfxTextureUnload(AsteroidTexture);
-    AEGfxTextureUnload(PlayerTexture);
+    AEGfxTextureUnload(PlanetTexture);
+    AEGfxTextureUnload(Player1Texture);
+    AEGfxTextureUnload(Player2Texture);
+    AEGfxTextureUnload(Player3Texture);
+    AEGfxTextureUnload(Player4Texture);
     AEGfxTextureUnload(BulletTexture);
     AEGfxDestroyFont(pFont); //Unload font
     AESysExit();
@@ -1183,7 +1241,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
     if (recvThread.joinable())
         recvThread.join();
 
-    if (myPlayerId != 0) {
+    if (myPlayerId != 0) 
+    {
         uint8_t disconnectMsg[5];
         disconnectMsg[0] = DISCONNECT;
         uint32_t netId = htonl(myPlayerId);

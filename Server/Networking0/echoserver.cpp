@@ -237,7 +237,7 @@ void spawnAsteroid()
     float halfHeight = windowHeight / 2.0f;
 
     float edgeBuffer = 50.0f;
-    asteroid.scale = static_cast<float>(rand() % 40 + 30);
+    asteroid.scale = static_cast<float>(rand() % 100 + 30);
     asteroid.health = 100;
 
     // Pick a random edge to spawn from
@@ -710,7 +710,7 @@ void serverReceiveLoop(SOCKET serverSocket)
                 else
                 {
                     //Help me double check why it keeps sending incomplete
-                    std::cerr << "[WARN] Incomplete or invalid multi bullet packet received." << std::endl;
+                    std::cerr << "[WARN] Incomplete or invalid multi bullet packet receivwed." << std::endl;
                 }
             }
 
