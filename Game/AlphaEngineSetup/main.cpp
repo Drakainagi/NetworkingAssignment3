@@ -327,7 +327,6 @@ void ReportScoreUpdate(uint32_t playerId, uint32_t points)
     pkt.playerId = playerId;
     pkt.increment = points;
 
-
     int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
         reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
     if (sent == SOCKET_ERROR) {
@@ -604,16 +603,17 @@ void HandleCollisionChecks()
 
         for (uint32_t f = MAX_REMOTE_OBJECTS / 2; f < MAX_REMOTE_OBJECTS; f++)
         {
-            if (gServerEntityPool[f].isActive)
+            if (!gRemoteEntities[f].isActive)
                 continue;
 
             if (checkSphereCollision(
-                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
-                gRemoteEntities[f].pos_x, gRemoteEntities[f].pos_y, gRemoteEntities[f].scale * 0.5f))
+                gRemoteEntities[i].pos_x, gRemoteEntities[i].pos_y, gRemoteEntities[i].scale * 0.5f,
+                gRemoteEntities[f].pos_x, gRemoteEntities[f].pos_y, gRemoteEntities[f].scale * 0.5f)
+                && gRemoteEntities[i].objectType == ObjectType::Asteroid)
             {
                 // Handle fake bullet collision
-                //gRemoteEntities[f].isActive = false;
-                //gServerEntityPool[f].isActive = false;
+                gRemoteEntities[f].isActive = false;
+                gServerEntityPool[f].isActive = false;
             }
         }
 #endif
@@ -657,22 +657,24 @@ void ReceiveThread(SOCKET socket)
         {
             GameUpdatePacket* update = reinterpret_cast<GameUpdatePacket*>(buffer);
             uint32_t count = update->objectCount;
-            if (count > MAX_REMOTE_OBJECTS)
-                count = MAX_REMOTE_OBJECTS;
+            // Limit updates to first half of pool.
+            if (count > MAX_REMOTE_OBJECTS / 2)
+                count = MAX_REMOTE_OBJECTS / 2;
 
             std::lock_guard<std::mutex> lock(gPoolMutex);
-            // Mark entire remote pool as inactive first.
-            for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS/2; i++)
+            // Mark first half of remote pool as inactive (for game updates).
+            for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
             {
                 gServerEntityPool[i].isActive = false;
                 gRemoteEntities[i].isActive = false;
             }
-            //Fill pool with new updates.
+
+            // Fill the first half with updated objects.
             uint32_t poolIndex = 0;
             for (uint32_t i = 0; i < count; i++) {
                 const GameObjectData& src = update->objects[i];
 
-                // Skip local player & local bullets
+                // Skip updates from local player & local bullets.
                 if ((src.objectType == ObjectType::Player && src.playerId == myPlayerId) ||
                     (src.objectType == ObjectType::Bullet && src.playerId == myPlayerId))
                     continue;
@@ -697,7 +699,6 @@ void ReceiveThread(SOCKET socket)
                 poolIndex++;
             }
         }
-        // In your ReceiveThread function, add the BULLET_SPAWN case: // This one spawns fake bullets utilizing the later half end of the pool on gServerEntityPool
         else if (packetType == BULLET_SPAWN)
         {
             // The minimum size for a multi-bullet packet includes type + count.
@@ -717,7 +718,7 @@ void ReceiveThread(SOCKET socket)
                     for (uint32_t i = 0; i < multiPkt->count; i++)
                     {
                         if (multiPkt->bullets[i].playerId == myPlayerId)
-                            break; // Avoid spawning on master client that has spawned this to begin with
+                            break; // Avoid spawning bullets for the master client.
 
                         // Calculate the bullet’s angle from its velocity.
                         float angle = atan2f(multiPkt->bullets[i].vel_y, multiPkt->bullets[i].vel_x);
@@ -734,13 +735,13 @@ void ReceiveThread(SOCKET socket)
                         bullet.scale = 100.0f;          // Adjust scale as desired.
                         bullet.isActive = true;         // Mark bullet as active.
 
-                        // Search for an inactive bullet slot in the designated bullet region of gServerEntityPool.
+                        // Search for an inactive bullet slot in the designated bullet region (second half).
                         int bulletIndex = -1;
-                        for (int i = MAX_REMOTE_OBJECTS / 2; i < MAX_REMOTE_OBJECTS; i++)
+                        for (int j = MAX_REMOTE_OBJECTS / 2; j < MAX_REMOTE_OBJECTS; j++)
                         {
-                            if (!gServerEntityPool[i].isActive)
+                            if (!gServerEntityPool[j].isActive)
                             {
-                                bulletIndex = i;
+                                bulletIndex = j;
                                 break;
                             }
                         }
@@ -921,10 +922,10 @@ void UpdateRemoteInterpolation(float dt)
     int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
     for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
     {
-        if (!gServerEntityPool[i].isActive) 
+        if (!gRemoteEntities[i].isActive)
             continue;
-        gRemoteEntities[i].pos_x += gServerEntityPool[i].vel_x * dt;
-        gRemoteEntities[i].pos_y += gServerEntityPool[i].vel_y * dt;
+        gRemoteEntities[i].pos_x += gRemoteEntities[i].vel_x * dt;
+        gRemoteEntities[i].pos_y += gRemoteEntities[i].vel_y * dt;
         gRemoteEntities[i].rotation = gServerEntityPool[i].rotation;
         gRemoteEntities[i].scale = gServerEntityPool[i].scale;
         gRemoteEntities[i].objectType = gServerEntityPool[i].objectType;
