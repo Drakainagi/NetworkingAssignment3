@@ -228,6 +228,13 @@ enum ObjectType
     Bullet
 };
 
+// Weapon type definitions:
+enum WeaponType {
+    PISTOL = 0,
+    SHOTGUN = 1,
+    MINIGUN = 2
+};
+
 // Remote pool: all entities updated from the server.
 GameObject gRemoteEntities[MAX_REMOTE_OBJECTS]; // Pool for entities from server pool to render & utilize on client
 GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Pool for entities from server directly from recv messages
@@ -248,7 +255,10 @@ float playerAngle = 0.0f;           // Orientation in radians.
 float playerVelX = 0.0f;
 float playerVelY = 0.0f;
 float playerAngularVelocity = 0.0f;
-const float playerRenderScale = 100.0f;  // For rendering scale.
+const float playerRenderScale = 50.0f;  // For rendering scale.
+// Example global weapon type (set via your UI or game logic)
+int selectedWeaponType = PISTOL; // Default to pistol, for example
+
 
 // AE-Engine mesh and textures
 AEGfxVertexList* pMesh = nullptr;
@@ -309,16 +319,71 @@ void SpawnBullet()
     pkt.damage = 10.0f;
 
     // Send BULLET_SPAWN packet to server.
-    int sentBytes = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
-        reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
-    if (sentBytes == SOCKET_ERROR) {
-        std::cerr << "[ERROR] sendto BULLET_SPAWN failed: " << WSAGetLastError() << std::endl;
-    }
+    //int sentBytes = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+    //    reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
+    //if (sentBytes == SOCKET_ERROR) {
+    //    std::cerr << "[ERROR] sendto BULLET_SPAWN failed: " << WSAGetLastError() << std::endl;
+    //}
 
     // Spawn bullet locally in the local pool.
-    SpawnLocalEntity(2, pkt.pos_x, pkt.pos_y, pkt.vel_x, pkt.vel_y, playerAngle, 20.0f);
+    SpawnLocalEntity(2, pkt.pos_x, pkt.pos_y, pkt.vel_x, pkt.vel_y, playerAngle, 40.0f);
 }
 
+// Spawns bullets based on weapon type.
+void SpawnWeaponBullets(int weaponType)
+{
+    switch (weaponType)
+    {
+    // Pistol: fires a single bullet.
+    case PISTOL:
+    {
+        // Fire one bullet in the direction of the player's aim.
+        SpawnBullet(); // Your existing function for one bullet.
+        break;
+    }
+
+    // Shotgun: fires several bullets in a spread.
+    case SHOTGUN:
+    {
+        const int numBullets = 5;  // Number of bullets in the spread.
+        // Spread of 15 degrees total.
+        const float spreadAngle = 15.0f * (3.14159265f / 180.0f);
+        // Center the spread around the player's angle.
+        float startAngle = playerAngle - spreadAngle * (numBullets - 1) / 2;
+        for (int i = 0; i < numBullets; i++)
+        {
+            float angle = startAngle + i * spreadAngle;
+            float bulletSpeed = 500.0f;
+            float vx = cosf(angle) * bulletSpeed;
+            float vy = sinf(angle) * bulletSpeed;
+            // Spawn bullet locally. (Using a smaller scale if desired.)
+            SpawnLocalEntity(ObjectType::Bullet, playerPosX, playerPosY, vx, vy, angle, 40.0f);
+        }
+        break;
+    }
+
+    // Minigun: fires continuously with random inaccuracy.
+    case MINIGUN:
+    {
+        // Fire one bullet per update if the button is held.
+        // Introduce a random inaccuracy between -5° and 5°.
+        const float maxDeviation = 5.0f * (3.14159265f / 180.0f); // radians
+        // Use a random deviation value.
+        float deviation = ((std::rand() % 11) - 5) * (3.14159265f / 180.0f);
+        float angle = playerAngle + deviation;
+        float bulletSpeed = 500.0f;
+        float vx = cosf(angle) * bulletSpeed;
+        float vy = sinf(angle) * bulletSpeed;
+        SpawnLocalEntity(ObjectType::Bullet, playerPosX, playerPosY, vx, vy, angle, 40.0f);
+        break;
+    }
+
+    // Default: use pistol behavior.
+    default:
+        SpawnBullet();
+        break;
+    }
+}
 #pragma endregion
 
 #pragma region Score Logic
@@ -470,7 +535,7 @@ void UpdateLocalSimulation(float dt)
     if (AEInputCheckCurr(AEVK_A))
         rotationInput = 1.0f;
 
-    const float thrustForce = 150.0f;
+    const float thrustForce = 250.0f;
     const float torqueForce = 7.0f;
     const float linearDamping = 0.7f;
     const float angularDamping = 0.95f;
@@ -521,14 +586,39 @@ void UpdateLocalSimulation(float dt)
         }
     }
 
-    // Check for bullet spawn input (fire key, e.g., SPACE).
-    if (AEInputCheckTriggered(AEVK_SPACE))
+    // For pistol and shotgun, fire on button press.
+    if (selectedWeaponType == PISTOL || selectedWeaponType == SHOTGUN)
     {
-        SpawnBullet();
+        if (AEInputCheckTriggered(AEVK_SPACE))
+        {
+            SpawnWeaponBullets(selectedWeaponType);
+        }
+    }
+    // For minigun, fire continuously while the button is held.
+    else if (selectedWeaponType == MINIGUN)
+    {
+        if (AEInputCheckCurr(AEVK_SPACE))
+        {
+            SpawnWeaponBullets(MINIGUN);
+        }
+    }
+
+    if (AEInputCheckTriggered(AEVK_8))
+    {
+        selectedWeaponType = MINIGUN;
+    }
+    if (AEInputCheckTriggered(AEVK_9))
+    {
+        selectedWeaponType = SHOTGUN;
+    }
+    if (AEInputCheckTriggered(AEVK_0))
+    {
+        selectedWeaponType = PISTOL;
     }
 
     //Score increment
-    if (AEInputCheckTriggered(AEVK_1)) {
+    if (AEInputCheckTriggered(AEVK_1)) 
+    {
         ReportScoreUpdate(myPlayerId, 10);  // +10 points test
     }
     // Here you could add more input-handling for other local-spawnable entities.
@@ -587,6 +677,14 @@ void HandleCollisionChecks()
                     std::cout << "[LOCAL] Asteroid with ID " << entityId << " destroyed by local bullet\n";
                 }
             }
+
+            //If too far from player
+            if (!checkSphereCollision(
+                gLocalEntities[j].pos_x, gLocalEntities[j].pos_y, gLocalEntities[j].scale * 0.5f,
+                gLocalPlayer.pos_x, gLocalPlayer.pos_y, 1000))
+            {
+                gLocalEntities[j].isActive = false;
+            }
         }
 #endif
 #pragma endregion
@@ -615,6 +713,15 @@ void HandleCollisionChecks()
                 gRemoteEntities[i].pos_x, gRemoteEntities[i].pos_y, gRemoteEntities[i].scale * 0.5f,
                 gRemoteEntities[f].pos_x, gRemoteEntities[f].pos_y, gRemoteEntities[f].scale * 0.5f)
                 && gRemoteEntities[i].objectType == ObjectType::Asteroid)
+            {
+                // Handle fake bullet collision
+                gRemoteEntities[f].isActive = false;
+                gServerEntityPool[f].isActive = false;
+            }
+
+            if (!checkSphereCollision(
+                gLocalPlayer.pos_x, gLocalPlayer.pos_y, 1000,
+                gRemoteEntities[f].pos_x, gRemoteEntities[f].pos_y, gRemoteEntities[f].scale * 0.5f))
             {
                 // Handle fake bullet collision
                 gRemoteEntities[f].isActive = false;
@@ -1041,7 +1148,10 @@ void Render()
         switch (gRemoteEntities[i].objectType)
         {
         case 1:
-            AEGfxTextureSet(AsteroidTexture, 0, 0);
+            if (gRemoteEntities[i].scale > 120)
+                AEGfxTextureSet(PlanetTexture, 0, 0);
+            else
+                AEGfxTextureSet(AsteroidTexture, 0, 0);
             break;
         case 2:
             AEGfxTextureSet(BulletTexture, 0, 0);
