@@ -72,7 +72,8 @@ enum PacketType : uint8_t
     NAME_REJECTED = 0x08,  // ✅ new packet type
     SCORE_INCREMENT = 0x09,
     SCORE_UPDATE = 0x10,
-    FINAL_SCOREBOARD = 0x11
+    FINAL_SCOREBOARD = 0x11,
+    ASTEROID_HIT = 0x12
 };
 #pragma pack(push, 1)
 struct JoinRequestPacket {
@@ -122,7 +123,7 @@ struct GameObjectData {
     float scale;
     float vel_x;
     float vel_y;
-    uint32_t asteroidId;
+    uint32_t entityId;
     bool isActive = true;
 };
 
@@ -136,7 +137,6 @@ struct ScoreIncrementPacket {
     uint8_t type;
     uint32_t playerId;
     uint32_t increment;
-    uint32_t asteroidId; // 👈 Add this
 };
 
 struct PlayerScore {
@@ -149,6 +149,11 @@ struct ScoreUpdatePacket {
     uint8_t type = SCORE_UPDATE;
     uint32_t scoreCount;
     PlayerScore scores[MAX_PLAYERS];
+};
+
+struct AsteroidUpdatePacket {
+    uint8_t type = ASTEROID_HIT;
+    uint32_t entityId;
 };
 
 #pragma pack(pop)
@@ -367,7 +372,7 @@ void broadcastGameState()
             data.vel_x = ast.vel_x;
             data.vel_y = ast.vel_y;
             data.isActive = true;
-            data.asteroidId = ast.id;
+            data.entityId = ast.id;
             gameObjects.push_back(data);
         }
     }
@@ -608,26 +613,31 @@ void handleScoreRequest(const char* buffer, int bytesReceived, const sockaddr_in
         std::cout << "[SCORE] Player " << pkt->playerId
             << " scored +" << pkt->increment
             << " (Total: " << gScoreBoard[pkt->playerId] << ")\n";
-    }
-
-    {
-        uint32_t idToDestroy = pkt->asteroidId;
-
-        std::lock_guard<std::mutex> lock(gameStateMutex);
-        for (auto& asteroid : asteroids)
-        {
-            if (asteroid.isActive && asteroid.id == idToDestroy)
-            {
-                asteroid.isActive = false;
-                std::cout << "[SERVER] Destroyed asteroid ID " << idToDestroy << " from player " << pkt->playerId << "\n";
-                break;
-            }
-        }
-    }
+    }  
 
     // Safe because broadcastScoreUpdate locks internally
     broadcastScoreUpdate();
 }
+
+void handleAsteroidRequest(const char* buffer, int bytesReceived, const sockaddr_in& clientAddr)
+{
+    const AsteroidUpdatePacket* pkt = reinterpret_cast<const AsteroidUpdatePacket*>(buffer);
+
+
+    uint32_t idToDestroy = pkt->entityId;
+
+    std::lock_guard<std::mutex> lock(gameStateMutex);
+    for (auto& asteroid : asteroids)
+    {
+        if (asteroid.isActive && asteroid.id == idToDestroy)
+        {
+            asteroid.isActive = false;
+            std::cout << "[SERVER] Destroyed asteroid ID " << idToDestroy << "\n";
+            break;
+        }
+    }
+}
+
 
 void handlePlayerUpdate(const PlayerUpdatePacket* updatePkt)
 {
@@ -712,6 +722,9 @@ void serverReceiveLoop(SOCKET serverSocket)
         }
         case SCORE_INCREMENT:
             handleScoreRequest(buffer, bytesReceived, clientAddr);
+            break;
+        case ASTEROID_HIT:
+            handleAsteroidRequest(buffer, bytesReceived, clientAddr);
             break;
         case DISCONNECT:
         {

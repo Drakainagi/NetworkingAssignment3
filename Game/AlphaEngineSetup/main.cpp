@@ -75,7 +75,8 @@ enum PacketType : uint8_t
     NAME_REJECTED = 0x08,  // new packet type
     SCORE_INCREMENT = 0x09,
     SCORE_UPDATE = 0x10,
-    FINAL_SCOREBOARD = 0x11
+    FINAL_SCOREBOARD = 0x11,
+    ASTEROID_HIT = 0x12
 };
 
 #pragma pack(push, 1)
@@ -159,6 +160,11 @@ struct ScoreUpdatePacket {
     uint8_t type = SCORE_UPDATE;
     uint32_t scoreCount;
     PlayerScore scores[MAX_PLAYERS];
+};
+
+struct AsteroidUpdatePacket {
+    uint8_t type = ASTEROID_HIT;
+    uint32_t entityId;
 };
 
 #pragma pack(pop)
@@ -314,13 +320,12 @@ void SpawnBullet()
 // ----------------------------------------------------------------------
 //  Score Increment Function
 // ----------------------------------------------------------------------
-void ReportScoreUpdate(uint32_t playerId, uint32_t points, uint32_t entityId)
+void ReportScoreUpdate(uint32_t playerId, uint32_t points)
 {
     ScoreIncrementPacket pkt;
     pkt.type = SCORE_INCREMENT;
     pkt.playerId = playerId;
     pkt.increment = points;
-    pkt.entityId = entityId;
 
 
     int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
@@ -399,6 +404,23 @@ void RenderScoreboardText(int Location = 0)
             AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1.0f, 0.84f, 0.0f, 1);  // Gold
         else
             AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1, 1, 1, 1);
+    }
+}
+
+#pragma endregion
+
+#pragma region Asteroid Logic
+
+void ReportAsteroidDestruction(uint32_t entityId)
+{
+    AsteroidUpdatePacket pkt;
+    pkt.type = ASTEROID_HIT;
+    pkt.entityId = entityId;
+
+    int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
+        reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
+    if (sent == SOCKET_ERROR) {
+        std::cerr << "[ERROR] sendto ASTEROID_HIT failed: " << WSAGetLastError() << std::endl;
     }
 }
 
@@ -503,7 +525,7 @@ void UpdateLocalSimulation(float dt)
 
     //Score increment
     if (AEInputCheckTriggered(AEVK_1)) {
-        ReportScoreUpdate(myPlayerId, 10, 0);  // +10 points test
+        ReportScoreUpdate(myPlayerId, 10);  // +10 points test
     }
     // Here you could add more input-handling for other local-spawnable entities.
 }
@@ -556,7 +578,8 @@ void HandleCollisionChecks()
                     gServerEntityPool[i].isActive = false;
                     gRemoteEntities[i].isActive = false;
 
-                    ReportScoreUpdate(myPlayerId, 10, entityId);
+                    ReportScoreUpdate(myPlayerId, 10);
+                    ReportAsteroidDestruction(entityId);
                     std::cout << "[LOCAL] Asteroid with ID " << entityId << " destroyed by local bullet\n";
                 }
             }
