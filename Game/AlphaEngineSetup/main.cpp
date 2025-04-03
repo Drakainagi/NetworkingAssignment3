@@ -635,11 +635,11 @@ void ReceiveThread(SOCKET socket)
 
             std::lock_guard<std::mutex> lock(gPoolMutex);
             // Mark entire remote pool as inactive first.
-            //for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS/2; i++)
-            //{
-            //    gServerEntityPool[i].isActive = false;
-            //}
-            // Fill pool with new updates.
+            for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS/2; i++)
+            {
+                gServerEntityPool[i].isActive = false;
+            }
+            //Fill pool with new updates.
             uint32_t poolIndex = 0;
             for (uint32_t i = 0; i < count; i++)
             {
