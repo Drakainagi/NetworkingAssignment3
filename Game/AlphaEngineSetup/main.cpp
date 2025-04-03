@@ -365,16 +365,23 @@ void SpawnWeaponBullets(int weaponType)
     // Minigun: fires continuously with random inaccuracy.
     case MINIGUN:
     {
-        // Fire one bullet per update if the button is held.
-        // Introduce a random inaccuracy between -5° and 5°.
-        const float maxDeviation = 5.0f * (3.14159265f / 180.0f); // radians
-        // Use a random deviation value.
-        float deviation = ((std::rand() % 11) - 5) * (3.14159265f / 180.0f);
-        float angle = playerAngle + deviation;
-        float bulletSpeed = 500.0f;
-        float vx = cosf(angle) * bulletSpeed;
-        float vy = sinf(angle) * bulletSpeed;
-        SpawnLocalEntity(ObjectType::Bullet, playerPosX, playerPosY, vx, vy, angle, 40.0f);
+        static int minigunFireCooldown = 0; // Countdown for minigun firing
+        if (minigunFireCooldown > 0)
+            --minigunFireCooldown;
+        if (minigunFireCooldown == 0)
+        {
+            minigunFireCooldown = 3;
+            // Fire one bullet per update if the button is held.
+            // Introduce a random inaccuracy between -5° and 5°.
+            const float maxDeviation = 5.0f * (3.14159265f / 180.0f); // radians
+            // Use a random deviation value.
+            float deviation = ((std::rand() % 11) - 5) * (3.14159265f / 180.0f);
+            float angle = playerAngle + deviation;
+            float bulletSpeed = 500.0f;
+            float vx = cosf(angle) * bulletSpeed;
+            float vy = sinf(angle) * bulletSpeed;
+            SpawnLocalEntity(ObjectType::Bullet, playerPosX, playerPosY, vx, vy, angle, 40.0f);
+        }
         break;
     }
 
@@ -681,7 +688,7 @@ void HandleCollisionChecks()
             //If too far from player
             if (!checkSphereCollision(
                 gLocalEntities[j].pos_x, gLocalEntities[j].pos_y, gLocalEntities[j].scale * 0.5f,
-                gLocalPlayer.pos_x, gLocalPlayer.pos_y, 1000))
+                gLocalPlayer.pos_x, gLocalPlayer.pos_y, 1500))
             {
                 gLocalEntities[j].isActive = false;
             }
@@ -720,7 +727,7 @@ void HandleCollisionChecks()
             }
 
             if (!checkSphereCollision(
-                gLocalPlayer.pos_x, gLocalPlayer.pos_y, 1000,
+                gLocalPlayer.pos_x, gLocalPlayer.pos_y, 1500,
                 gRemoteEntities[f].pos_x, gRemoteEntities[f].pos_y, gRemoteEntities[f].scale * 0.5f))
             {
                 // Handle fake bullet collision
@@ -844,7 +851,7 @@ void ReceiveThread(SOCKET socket)
                         bullet.vel_x = multiPkt->bullets[i].vel_x;
                         bullet.vel_y = multiPkt->bullets[i].vel_y;
                         bullet.rotation = angle;
-                        bullet.scale = 100.0f;          // Adjust scale as desired.
+                        bullet.scale = 50.0f;          // Adjust scale as desired.
                         bullet.isActive = true;         // Mark bullet as active.
 
                         // Search for an inactive bullet slot in the designated bullet region (second half).

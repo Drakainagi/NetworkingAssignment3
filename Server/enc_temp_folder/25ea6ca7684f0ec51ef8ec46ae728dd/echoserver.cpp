@@ -567,7 +567,7 @@ void handleJoinRequest(const sockaddr_in& clientAddr, const JoinRequestPacket* p
     newPlayer.pos_x = 400.0f;
     newPlayer.pos_y = 300.0f;
     newPlayer.rotation = 0.0f;
-    newPlayer.scale = 50.0f;
+    newPlayer.scale = 100.0f;
     newPlayer.health = 100.0f;
     newPlayer.vel_x = 0.0f;
     newPlayer.vel_y = 0.0f;
