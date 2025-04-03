@@ -28,6 +28,7 @@
 #include <map>
 #include <algorithm>
 #include <string>
+#include <set>
 
 #pragma comment(lib, "ws2_32.lib")
 
@@ -130,7 +131,7 @@ struct GameObjectData {
     float scale;
     float vel_x;      // Velocity X component.
     float vel_y;      // Velocity Y component.
-
+    uint32_t asteroidId;
     bool isActive = false;
 };
 
@@ -144,6 +145,7 @@ struct ScoreIncrementPacket {
     uint8_t type = SCORE_INCREMENT;
     uint32_t playerId;
     uint32_t increment;
+    uint32_t asteroidId; 
 };
 
 struct PlayerScore {
@@ -175,6 +177,9 @@ sockaddr_in serverAddr{};
 std::map<uint32_t, uint32_t> gScoreBoard;
 std::mutex gScoreMutex;
 
+// Destroyed Asteroids
+std::set<uint32_t> destroyedAsteroidIds;
+std::mutex destroyedMutex;
 
 // ----------------------------------------------------------------------
 // Entity Structures & Pools
@@ -188,7 +193,7 @@ struct GameObject
     float rotation = 0.0f;
     uint8_t objectType = 0; // Use Object Type
     uint32_t playerId = 0;  // Valid for player objects.
-
+    uint32_t asteroidId = 0;
     bool isSent = false;
     bool isActive = true;
 };
@@ -292,12 +297,14 @@ void SpawnBullet()
 // ----------------------------------------------------------------------
 //  Score Increment Function
 // ----------------------------------------------------------------------
-void ReportScoreUpdate(uint32_t playerId, uint32_t points)
+void ReportScoreUpdate(uint32_t playerId, uint32_t points, uint32_t asteroidIndex)
 {
     ScoreIncrementPacket pkt;
     pkt.type = SCORE_INCREMENT;
     pkt.playerId = playerId;
     pkt.increment = points;
+    pkt.asteroidId = asteroidIndex;
+
 
     int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
         reinterpret_cast<sockaddr*>(&serverAddr), sizeof(serverAddr));
@@ -350,7 +357,6 @@ void RenderScoreboardText()
 
 }
 #pragma endregion
-
 
 #pragma region Cleaning/Destroying Objects
 //void CleanupLocalEntities()
@@ -451,7 +457,7 @@ void UpdateLocalSimulation(float dt)
 
     //Score increment
     if (AEInputCheckTriggered(AEVK_1)) {
-        ReportScoreUpdate(myPlayerId, 10);  // +10 points test
+        ReportScoreUpdate(myPlayerId, 10, 0);  // +10 points test
     }
     // Here you could add more input-handling for other local-spawnable entities.
 }
@@ -465,7 +471,6 @@ void HandleCollisionChecks()
 
     for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
     {
-        // Only process if the slot is active.
         if (!gServerEntityPool[i].isActive)
             continue;
 
@@ -484,7 +489,6 @@ void HandleCollisionChecks()
 #if 1
         for (uint32_t j = 0; j < MAX_LOCAL_ENTITIES; j++)
         {
-            // Only process if the slot is active.
             if (!gLocalEntities[j].isActive)
                 continue;
 
@@ -492,8 +496,22 @@ void HandleCollisionChecks()
                 gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
                 gLocalEntities[j].pos_x, gLocalEntities[j].pos_y, gLocalEntities[j].scale * 0.5f))
             {
-                // Disable bullet on impact.
-                gLocalEntities[j].isActive = false;
+                if (gServerEntityPool[i].objectType == ObjectType::Asteroid)
+                {
+                    gLocalEntities[j].isActive = false;
+
+                    uint32_t asteroidId = gServerEntityPool[i].asteroidId;
+                    
+                    std::lock_guard<std::mutex> dlock(destroyedMutex);
+                    if (destroyedAsteroidIds.count(asteroidId))
+                        continue; // Already destroyed
+
+                    destroyedAsteroidIds.insert(asteroidId);
+                    ReportScoreUpdate(myPlayerId, 10, asteroidId);
+                    
+
+                    std::cout << "[LOCAL] Asteroid with ID " << asteroidId << " destroyed by local bullet\n";
+                }
             }
         }
 #endif
@@ -514,7 +532,6 @@ void HandleCollisionChecks()
             }
         }
 
-        // For fake bullets (assuming they occupy the second half of the pool)
         for (uint32_t j = MAX_REMOTE_OBJECTS / 2; j < MAX_REMOTE_OBJECTS; j++)
         {
             if (!gServerEntityPool[j].isActive)
@@ -530,9 +547,7 @@ void HandleCollisionChecks()
 #endif
 #pragma endregion
     }
-
 }
-
 #pragma endregion
 
 #pragma region Client Interaction
@@ -602,6 +617,7 @@ void ReceiveThread(SOCKET socket)
                 gServerEntityPool[poolIndex].vel_x = src.vel_x;
                 gServerEntityPool[poolIndex].vel_y = src.vel_y;
                 gServerEntityPool[poolIndex].isActive = src.isActive; // or simply true if update means active
+                gServerEntityPool[poolIndex].asteroidId = src.asteroidId;
                 poolIndex++;
             }
             // (Optional) You can store poolIndex somewhere if needed.
@@ -811,6 +827,7 @@ void UpdateRemoteInterpolation(float dt)
         gRemoteEntities[i].playerId = gServerEntityPool[i].playerId;
         gRemoteEntities[i].vel_x = gServerEntityPool[i].vel_x;
         gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
+        gRemoteEntities[i].asteroidId = gServerEntityPool[i].asteroidId;
     }
 
     // Update bullet objects by simply adding velocity to position.
@@ -875,6 +892,18 @@ void Render()
     {
         if (!gRemoteEntities[i].isActive)
             continue;
+
+
+        if (gRemoteEntities[i].objectType == ObjectType::Asteroid)
+        {
+            std::lock_guard<std::mutex> lock(destroyedMutex);
+            std::cout << "[RENDER] Asteroid ID: " << gRemoteEntities[i].asteroidId << "\n";
+            if (destroyedAsteroidIds.count(gRemoteEntities[i].asteroidId))
+            {
+                std::cout << "[DEBUG] Skipping asteroid ID " << gRemoteEntities[i].asteroidId << " during render\n";
+                continue; // Skip rendering this destroyed asteroid
+            }
+        }
 
         AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
         AEMtx33Scale(&scaleMtx, gRemoteEntities[i].scale, gRemoteEntities[i].scale);
