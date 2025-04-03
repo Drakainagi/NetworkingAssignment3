@@ -132,7 +132,7 @@ struct GameObjectData {
     float scale;
     float vel_x;      // Velocity X component.
     float vel_y;      // Velocity Y component.
-    uint32_t asteroidId;
+    uint32_t entityId;
     bool isActive = false;
 };
 
@@ -146,7 +146,7 @@ struct ScoreIncrementPacket {
     uint8_t type = SCORE_INCREMENT;
     uint32_t playerId;
     uint32_t increment;
-    uint32_t asteroidId;
+    uint32_t entityId;
 };
 
 struct PlayerScore {
@@ -193,7 +193,7 @@ float scoreboardAnimTimer = 0.0f;
 const float scoreboardAnimDuration = 1.5f; // seconds
 
 // Destroyed Asteroids
-std::set<uint32_t> destroyedAsteroidIds;
+std::set<uint32_t> destroyedEntityIds;
 std::mutex destroyedMutex;
 
 // ----------------------------------------------------------------------
@@ -208,9 +208,9 @@ struct GameObject
     float rotation = 0.0f;
     uint8_t objectType = 0; // Use Object Type
     uint32_t playerId = 0;  // Valid for player objects.
-    uint32_t asteroidId = 0;
+    uint32_t entityId = 0;
     bool isSent = false;
-    bool isActive = true;
+    bool isActive = false;
 };
 
 enum ObjectType
@@ -312,13 +312,13 @@ void SpawnBullet()
 // ----------------------------------------------------------------------
 //  Score Increment Function
 // ----------------------------------------------------------------------
-void ReportScoreUpdate(uint32_t playerId, uint32_t points, uint32_t asteroidIndex)
+void ReportScoreUpdate(uint32_t playerId, uint32_t points, uint32_t entityId)
 {
     ScoreIncrementPacket pkt;
     pkt.type = SCORE_INCREMENT;
     pkt.playerId = playerId;
     pkt.increment = points;
-    pkt.asteroidId = asteroidIndex;
+    pkt.entityId = entityId;
 
 
     int sent = sendto(udpSocket, reinterpret_cast<char*>(&pkt), sizeof(pkt), 0,
@@ -552,17 +552,17 @@ void HandleCollisionChecks()
                 {
                     gLocalEntities[j].isActive = false;
 
-                    uint32_t asteroidId = gServerEntityPool[i].asteroidId;
+                    uint32_t entityId = gServerEntityPool[i].entityId;
 
                     std::lock_guard<std::mutex> dlock(destroyedMutex);
-                    if (destroyedAsteroidIds.count(asteroidId))
+                    if (destroyedEntityIds.count(entityId))
                         continue; // Already destroyed
 
-                    destroyedAsteroidIds.insert(asteroidId);
-                    ReportScoreUpdate(myPlayerId, 10, asteroidId);
+                    destroyedEntityIds.insert(entityId);
+                    ReportScoreUpdate(myPlayerId, 10, entityId);
 
 
-                    std::cout << "[LOCAL] Asteroid with ID " << asteroidId << " destroyed by local bullet\n";
+                    std::cout << "[LOCAL] Asteroid with ID " << entityId << " destroyed by local bullet\n";
                 }
             }
         }
@@ -669,10 +669,9 @@ void ReceiveThread(SOCKET socket)
                 gServerEntityPool[poolIndex].vel_x = src.vel_x;
                 gServerEntityPool[poolIndex].vel_y = src.vel_y;
                 gServerEntityPool[poolIndex].isActive = src.isActive; // or simply true if update means active
-                gServerEntityPool[poolIndex].asteroidId = src.asteroidId;
+                gServerEntityPool[poolIndex].entityId = src.entityId;
                 poolIndex++;
             }
-            // (Optional) You can store poolIndex somewhere if needed.
         }
         // In your ReceiveThread function, add the BULLET_SPAWN case:
         else if (packetType == BULLET_SPAWN)
@@ -858,24 +857,24 @@ void UpdateRemoteInterpolation(float dt)
     // Process non-bullet remote objects (assumed in first half of pool).
     for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
     {
-        if (!gRemoteEntities[i].isActive) continue;
+        if (!gServerEntityPool[i].isActive) continue;
 
         float targetPosX = gServerEntityPool[i].pos_x + gServerEntityPool[i].vel_x * extrapolationFactor;
         float targetPosY = gServerEntityPool[i].pos_y + gServerEntityPool[i].vel_y * extrapolationFactor;
         float targetRot = gServerEntityPool[i].rotation;
         float targetScale = gServerEntityPool[i].scale;
 
-        float diffX = fabs(targetPosX - gRemoteEntities[i].pos_x);
+        float diffX = fabs(targetPosX - gServerEntityPool[i].pos_x);
         if (diffX > posThreshold)
             gRemoteEntities[i].pos_x = targetPosX;
         else
-            gRemoteEntities[i].pos_x = Lerp(gRemoteEntities[i].pos_x, targetPosX, lerpFactor);
+            gRemoteEntities[i].pos_x = Lerp(gServerEntityPool[i].pos_x, targetPosX, lerpFactor);
 
-        float diffY = fabs(targetPosY - gRemoteEntities[i].pos_y);
+        float diffY = fabs(targetPosY - gServerEntityPool[i].pos_y);
         if (diffY > posThreshold)
             gRemoteEntities[i].pos_y = targetPosY;
         else
-            gRemoteEntities[i].pos_y = Lerp(gRemoteEntities[i].pos_y, targetPosY, lerpFactor);
+            gRemoteEntities[i].pos_y = Lerp(gServerEntityPool[i].pos_y, targetPosY, lerpFactor);
 
         gRemoteEntities[i].rotation = targetRot;
         gRemoteEntities[i].scale = targetScale;
@@ -883,7 +882,8 @@ void UpdateRemoteInterpolation(float dt)
         gRemoteEntities[i].playerId = gServerEntityPool[i].playerId;
         gRemoteEntities[i].vel_x = gServerEntityPool[i].vel_x;
         gRemoteEntities[i].vel_y = gServerEntityPool[i].vel_y;
-        gRemoteEntities[i].asteroidId = gServerEntityPool[i].asteroidId;
+        gRemoteEntities[i].entityId = gServerEntityPool[i].entityId;
+        gRemoteEntities[i].isActive = gServerEntityPool[i].isActive;
     }
 
     // Update bullet objects by simply adding velocity to position.
@@ -943,20 +943,19 @@ void Render()
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
 
-    // Render remote entities (non-bullets) from first half of remote pool.
-    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS / 2; i++)
+    // Render remote entities remote pool.
+    for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
     {
         if (!gRemoteEntities[i].isActive)
             continue;
 
-
         if (gRemoteEntities[i].objectType == ObjectType::Asteroid)
         {
             std::lock_guard<std::mutex> lock(destroyedMutex);
-            std::cout << "[RENDER] Asteroid ID: " << gRemoteEntities[i].asteroidId << "\n";
-            if (destroyedAsteroidIds.count(gRemoteEntities[i].asteroidId))
+            std::cout << "[RENDER] Asteroid ID: " << gRemoteEntities[i].entityId << "\n";
+            if (destroyedEntityIds.count(gRemoteEntities[i].entityId))
             {
-                std::cout << "[DEBUG] Skipping asteroid ID " << gRemoteEntities[i].asteroidId << " during render\n";
+                std::cout << "[DEBUG] Skipping asteroid ID " << gRemoteEntities[i].entityId << " during render\n";
                 continue; // Skip rendering this destroyed asteroid
             }
         }
@@ -984,25 +983,6 @@ void Render()
         AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
     }
 
-    // Render bullet entities from the global pool (second half).
-    int bulletStartIndex = MAX_REMOTE_OBJECTS / 2;
-    for (int i = bulletStartIndex; i < MAX_REMOTE_OBJECTS; i++)
-    {
-        if (!gServerEntityPool[i].isActive)
-            continue;
-
-        AEMtx33 scaleMtx, rotMtx, transMtx, finalMtx;
-        AEMtx33Scale(&scaleMtx, gServerEntityPool[i].scale, gServerEntityPool[i].scale);
-        AEMtx33Rot(&rotMtx, gServerEntityPool[i].rotation + (3.1415926f / 2.0f));
-        AEMtx33Trans(&transMtx, gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y);
-        AEMtx33Concat(&finalMtx, &rotMtx, &scaleMtx);
-        AEMtx33Concat(&finalMtx, &transMtx, &finalMtx);
-
-        // Use the bullet texture for bullet entities.
-        AEGfxTextureSet(BulletTexture, 0, 0);
-        AEGfxSetTransform(finalMtx.m);
-        AEGfxMeshDraw(pMesh, AE_GFX_MDM_TRIANGLES);
-    }
     RenderScoreboardText();
 }
 
