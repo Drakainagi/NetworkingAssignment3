@@ -72,7 +72,7 @@ enum PacketType : uint8_t
     BULLET_SPAWN = 0x06,  // New packet type for bullet spawning.
     // Score packets
     DISCONNECT = 0x07,
-    NAME_REJECTED = 0x08,  // ✅ new packet type
+    NAME_REJECTED = 0x08,  // new packet type
     SCORE_INCREMENT = 0x09,
     SCORE_UPDATE = 0x10,
     FINAL_SCOREBOARD = 0x11
@@ -152,6 +152,7 @@ struct ScoreIncrementPacket {
 struct PlayerScore {
     uint32_t playerId;
     uint32_t score;
+    char name[32];  // Add this field
 };
 
 struct ScoreUpdatePacket {
@@ -177,6 +178,7 @@ sockaddr_in serverAddr{};
 // Score variables
 std::map<uint32_t, uint32_t> gScoreBoard;
 std::mutex gScoreMutex;
+std::map<uint32_t, std::string> gPlayerNames;
 
 // Game State 
 enum GameState {
@@ -336,9 +338,11 @@ void RenderScoreboardText(int Location = 0)
 {
     // Lock and copy the current scoreboard
     std::vector<std::pair<uint32_t, uint32_t>> sortedScores;
+    std::map<uint32_t, std::string> localPlayerNames;
     {
         std::lock_guard<std::mutex> lock(gScoreMutex);
         sortedScores.assign(gScoreBoard.begin(), gScoreBoard.end());
+        localPlayerNames = gPlayerNames; // Copy player names
     }
 
     // Sort by score (descending)
@@ -348,20 +352,11 @@ void RenderScoreboardText(int Location = 0)
         });
 
     // Header
-    const char* headerText = "";
-
-    if (Location == 1) {
-        headerText = "Final Scoreboard";
-    }
-    else {
-        headerText = "Scoreboard";
-    }
+    const char* headerText = (Location == 1) ? "Final Scoreboard" : "Scoreboard";
 
     f32 w = 1.0f, h = 1.0f;
     AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
 
-    // Center Y for win screen display
-// Center Y for win screen display
     float startY = 1.2f; // Start off-screen above
     float endY = 0.1f;   // Final resting Y center offset
 
@@ -369,7 +364,6 @@ void RenderScoreboardText(int Location = 0)
     if (animT > 1.0f) animT = 1.0f;
 
     float centerYOffset = Lerp(startY, endY, animT);
-
 
     float baseX = (Location == 1) ? -w / 2.0f : 1.0f - w - 0.05f;
     float baseY = (Location == 1) ? centerYOffset : 1.0f - h - 0.05f;
@@ -385,12 +379,13 @@ void RenderScoreboardText(int Location = 0)
         uint32_t playerId = entry.first;
         uint32_t score = entry.second;
 
-        // Customize display for top player
-        std::string line;
-        if (i == 0)  // Top scorer
-            line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
-        else
-            line = "P" + std::to_string(playerId) + " : " + std::to_string(score);
+        // Look up player name
+        std::string displayName = "P" + std::to_string(playerId);
+        auto it = localPlayerNames.find(playerId);
+        if (it != localPlayerNames.end())
+            displayName = it->second;
+
+        std::string line = displayName + " : " + std::to_string(score);
 
         const char* txt = line.c_str();
         f32 lineW = 1.0f, lineH = 1.0f;
@@ -405,7 +400,6 @@ void RenderScoreboardText(int Location = 0)
         else
             AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1, 1, 1, 1);
     }
-
 }
 
 #pragma endregion
@@ -750,6 +744,12 @@ void ReceiveThread(SOCKET socket)
 
             std::lock_guard<std::mutex> lock(gScoreMutex);
             gScoreBoard.clear();
+            gPlayerNames.clear(); 
+
+            for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
+                gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
+                gPlayerNames[pkt->scores[i].playerId] = pkt->scores[i].name;
+            }
 
             uint32_t highestScore = 0;
             for (uint32_t i = 0; i < pkt->scoreCount; ++i) {

@@ -142,6 +142,7 @@ struct ScoreIncrementPacket {
 struct PlayerScore {
     uint32_t playerId;
     uint32_t score;
+    char name[32]; // Add this field
 };
 
 struct ScoreUpdatePacket {
@@ -406,10 +407,22 @@ void broadcastScoreUpdate()
 
     {
         std::lock_guard<std::mutex> lock(gScoreMutex);
+        std::lock_guard<std::mutex> playerLock(gameStateMutex);
         for (const auto& [id, score] : gScoreBoard) {
             PlayerScore entry;
             entry.playerId = id;
             entry.score = score;
+
+            // Copy the player name from the PlayerEntity map
+            auto it = players.find(id);
+            if (it != players.end()) {
+                strncpy_s(entry.name, it->second.name, sizeof(entry.name));
+                entry.name[sizeof(entry.name) - 1] = '\0'; // Safe null-termination
+            }
+            else {
+                strncpy_s(entry.name, "Unknown", sizeof(entry.name));
+            }
+
             scoreEntries.push_back(entry);
         }
     }
@@ -536,7 +549,7 @@ void handleJoinRequest(const sockaddr_in& clientAddr, const JoinRequestPacket* p
 
     if (clientAddresses.size() >= MAX_PLAYERS)
     {
-        std::cout << "[WARN] Max players reached. Ignoring join request." << std::endl;
+        std::cout << "[WARN] Max players reached. Ignoring join raequest." << std::endl;
         return;
     }
 
