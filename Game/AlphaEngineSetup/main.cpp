@@ -36,7 +36,7 @@
 constexpr uint16_t SERVER_PORT = 9000;
 constexpr int CLIENT_PORT_START = 9001;
 constexpr int BUFFER_SIZE = 4096;
-constexpr int MAX_REMOTE_OBJECTS = 256;  // Objects coming from the server. // Anything above 256 is considered as cached or fake entities that server does not know, hence the mismatch
+constexpr int MAX_REMOTE_OBJECTS = 512;  // Objects coming from the server. // Anything above 256 is considered as cached or fake entities that server does not know, hence the mismatch
 constexpr int MAX_LOCAL_ENTITIES = 100;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10;
 constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
@@ -221,8 +221,8 @@ enum ObjectType
 };
 
 // Remote pool: all entities updated from the server.
-GameObject gRemoteEntities[MAX_REMOTE_OBJECTS];
-GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Temporary buffer from server. 
+GameObject gRemoteEntities[MAX_REMOTE_OBJECTS]; // Pool for entities from server pool to render & utilize on client
+GameObject gServerEntityPool[MAX_REMOTE_OBJECTS]; // Pool for entities from server directly from recv messages
 
 // Local pool: stores local player and other local spawned objects.
 GameObject gLocalPlayer; // Local player object.
@@ -523,13 +523,13 @@ void HandleCollisionChecks()
 
     for (uint32_t i = 0; i < MAX_REMOTE_OBJECTS; i++)
     {
-        if (!gServerEntityPool[i].isActive)
+        if (!gRemoteEntities[i].isActive)
             continue;
 
 #pragma region With Player
 #if 1
         if (checkSphereCollision(
-            gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+            gRemoteEntities[i].pos_x, gRemoteEntities[i].pos_y, gRemoteEntities[i].scale * 0.5f,
             gLocalPlayer.pos_x, gLocalPlayer.pos_y, gLocalPlayer.scale * 0.5f))
         {
             // Handle player collision
@@ -545,7 +545,7 @@ void HandleCollisionChecks()
                 continue;
 
             if (checkSphereCollision(
-                gServerEntityPool[i].pos_x, gServerEntityPool[i].pos_y, gServerEntityPool[i].scale * 0.5f,
+                gRemoteEntities[i].pos_x, gRemoteEntities[i].pos_y, gRemoteEntities[i].scale * 0.5f,
                 gLocalEntities[j].pos_x, gLocalEntities[j].pos_y, gLocalEntities[j].scale * 0.5f))
             {
                 if (gServerEntityPool[i].objectType == ObjectType::Asteroid)
@@ -561,7 +561,6 @@ void HandleCollisionChecks()
                     destroyedEntityIds.insert(entityId);
                     ReportScoreUpdate(myPlayerId, 10, entityId);
 
-
                     std::cout << "[LOCAL] Asteroid with ID " << entityId << " destroyed by local bullet\n";
                 }
             }
@@ -570,7 +569,7 @@ void HandleCollisionChecks()
 #pragma endregion
 
 #pragma region With Each Other (different objs from server)
-#if 1
+#if 0
         for (uint32_t j = 0; j < i; j++) // Prevent self-collision by iterating only to i.
         {
             if (!gServerEntityPool[j].isActive)
@@ -673,7 +672,7 @@ void ReceiveThread(SOCKET socket)
                 poolIndex++;
             }
         }
-        // In your ReceiveThread function, add the BULLET_SPAWN case:
+        // In your ReceiveThread function, add the BULLET_SPAWN case: // This one spawns fake bullets utilizing the later half end of the pool on gServerEntityPool
         else if (packetType == BULLET_SPAWN)
         {
             // The minimum size for a multi-bullet packet includes type + count.
@@ -952,7 +951,7 @@ void Render()
         if (gRemoteEntities[i].objectType == ObjectType::Asteroid)
         {
             std::lock_guard<std::mutex> lock(destroyedMutex);
-            std::cout << "[RENDER] Asteroid ID: " << gRemoteEntities[i].entityId << "\n";
+            //std::cout << "[RENDER] Asteroid ID: " << gRemoteEntities[i].entityId << "\n";
             if (destroyedEntityIds.count(gRemoteEntities[i].entityId))
             {
                 std::cout << "[DEBUG] Skipping asteroid ID " << gRemoteEntities[i].entityId << " during render\n";
@@ -1114,6 +1113,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE hInstance,
             UpdateLocalSimulation(dt);
             SendLocalUpdate(myPlayerId);
             UpdateRemoteInterpolation(dt);
+            HandleCollisionChecks();
             Render();
             break;
 
