@@ -340,7 +340,6 @@ void ReportScoreUpdate(uint32_t playerId, uint32_t points, uint32_t entityId)
 // ----------------------------------------------------------------------
 //  Scoreboard render function
 // ----------------------------------------------------------------------
-
 void RenderScoreboardText(int Location = 0)
 {
     // Lock and copy the current scoreboard
@@ -396,14 +395,29 @@ void RenderScoreboardText(int Location = 0)
         if (displayName == "Unknown")
             continue;
 
+        // Fetch stored time string
         std::string timeStr = "??:??:??";
         auto tsIt = gScoreTimestamps.find(playerId);
         if (tsIt != gScoreTimestamps.end())
             timeStr = tsIt->second;
 
-        std::string line = displayName + " : " + std::to_string(score) + " @ " + timeStr;
+        // Add today's date
+        auto now = std::chrono::system_clock::now();
+        std::time_t tNow = std::chrono::system_clock::to_time_t(now);
+        std::tm localTime;
+        localtime_s(&localTime, &tNow);
 
+        std::ostringstream fullTimeStream;
+        fullTimeStream << std::put_time(&localTime, "%Y-%m-%d ") << timeStr;
+
+        // Format with Top #X prefix
+        std::ostringstream lineStream;
+        lineStream << "Top #" << (i + 1) << " - " << displayName << " : " << score
+            << " @ " << fullTimeStream.str();
+
+        std::string line = lineStream.str();
         const char* txt = line.c_str();
+
         f32 lineW = 1.0f, lineH = 1.0f;
         AEGfxGetPrintSize(pFont, txt, 0.5f, &lineW, &lineH);
 
