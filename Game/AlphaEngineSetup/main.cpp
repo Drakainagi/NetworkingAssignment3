@@ -45,6 +45,8 @@ constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
 constexpr int VICTORY_SCORE = 500; // Client based intended
 
 std::map<uint32_t, std::string> gScoreUpdateTimestamps;
+std::map<uint32_t, std::string> gScoreTimestamps;
+
 
 
 #pragma region Helper Func
@@ -394,11 +396,10 @@ void RenderScoreboardText(int Location = 0)
         if (displayName == "Unknown")
             continue;
 
-        // Get last update time
-        std::string timeStr = "--:--:--";
-        auto timeIt = localScoreTimes.find(playerId);
-        if (timeIt != localScoreTimes.end())
-            timeStr = timeIt->second;
+        std::string timeStr = "??:??:??";
+        auto tsIt = gScoreTimestamps.find(playerId);
+        if (tsIt != gScoreTimestamps.end())
+            timeStr = tsIt->second;
 
         std::string line = displayName + " : " + std::to_string(score) + " @ " + timeStr;
 
@@ -764,27 +765,30 @@ void ReceiveThread(SOCKET socket)
             ScoreUpdatePacket* pkt = reinterpret_cast<ScoreUpdatePacket*>(buffer);
 
             std::lock_guard<std::mutex> lock(gScoreMutex);
-            gScoreBoard.clear();
-            gPlayerNames.clear();
 
-            auto now = std::chrono::system_clock::now();
-            std::time_t timeNow = std::chrono::system_clock::to_time_t(now);
-            std::tm localTime;
-            localtime_s(&localTime, &timeNow);
+            for (uint32_t i = 0; i < pkt->scoreCount; ++i)
+            {
+                uint32_t pid = pkt->scores[i].playerId;
+                uint32_t score = pkt->scores[i].score;
+                std::string name = pkt->scores[i].name;
 
-            char timeStr[16];
-            std::strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &localTime);
+                // Update timestamp only if score changed
+                if (gScoreBoard[pid] != score)
+                {
+                    // Get current time as HH:MM:SS
+                    auto now = std::chrono::system_clock::now();
+                    std::time_t tNow = std::chrono::system_clock::to_time_t(now);
+                    std::tm localTime;
+                    localtime_s(&localTime, &tNow);
 
-            for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
-                uint32_t playerId = pkt->scores[i].playerId;
-                gScoreBoard[playerId] = pkt->scores[i].score;
-                gPlayerNames[playerId] = pkt->scores[i].name;
+                    std::ostringstream oss;
+                    oss << std::put_time(&localTime, "%H:%M:%S");
+                    gScoreTimestamps[pid] = oss.str();
+                }
 
-                // Store time of update only if it's a new score or player
-                if (gScoreUpdateTimestamps[playerId] != timeStr)
-                    gScoreUpdateTimestamps[playerId] = timeStr;
+                gScoreBoard[pid] = score;
+                gPlayerNames[pid] = name;
             }
-
             // Win check
             uint32_t highestScore = 0;
             for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
