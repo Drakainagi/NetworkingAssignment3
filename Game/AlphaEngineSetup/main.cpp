@@ -39,7 +39,7 @@ constexpr int BUFFER_SIZE = 4096;
 constexpr int MAX_REMOTE_OBJECTS = 512;  // Objects coming from the server. // Anything above 256 is considered as cached or fake entities that server does not know, hence the mismatch
 constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups, etc.
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10;
-constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
+constexpr int MAX_PLAYERS_SCORECOUNT = 20; // Maximum number for score-count
 constexpr int VICTORY_SCORE = 500; // Client based intended
 
 #pragma region Helper Func
@@ -159,7 +159,7 @@ struct PlayerScore {
 struct ScoreUpdatePacket {
     uint8_t type = SCORE_UPDATE;
     uint32_t scoreCount;
-    PlayerScore scores[MAX_PLAYERS];
+    PlayerScore scores[MAX_PLAYERS_SCORECOUNT];
 };
 
 struct AsteroidUpdatePacket {

@@ -456,11 +456,13 @@ void broadcastScoreUpdate()
     std::lock_guard<std::mutex> clientsLock(clientsMutex);
     for (const auto& addr : clientAddresses)
     {
+        /*
         std::cout << "[BROADCAST] Sending SCORE_UPDATE with " << scoreCount << " entries\n";
         for (const auto& entry : scoreEntries)
         {
             std::cout << "  -> Player " << entry.playerId << " = " << entry.score << "\n";
         }
+         */
 
         int bytesSent = sendto(g_serverSocket,
             buffer.data(),
@@ -468,6 +470,7 @@ void broadcastScoreUpdate()
             0,
             reinterpret_cast<const sockaddr*>(&addr),
             sizeof(addr));
+
 
         if (bytesSent == SOCKET_ERROR) {
             std::cerr << "[ERROR] SCORE_UPDATE sendto failed: " << WSAGetLastError() << std::endl;
@@ -610,9 +613,11 @@ void handleScoreRequest(const char* buffer, int bytesReceived, const sockaddr_in
         std::lock_guard<std::mutex> lock(gScoreMutex);
         gScoreBoard[pkt->playerId] += pkt->increment;
 
+        /* 
         std::cout << "[SCORE] Player " << pkt->playerId
             << " scored +" << pkt->increment
             << " (Total: " << gScoreBoard[pkt->playerId] << ")\n";
+         */
     }  
 
     // Safe because broadcastScoreUpdate locks internally
