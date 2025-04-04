@@ -414,7 +414,6 @@ void ReportScoreUpdate(uint32_t playerId, uint32_t points)
 // ----------------------------------------------------------------------
 //  Scoreboard render function
 // ----------------------------------------------------------------------
-
 void RenderScoreboardText(int Location = 0)
 {
     // Lock and copy the current scoreboard
@@ -451,21 +450,22 @@ void RenderScoreboardText(int Location = 0)
 
     AEGfxPrint(pFont, headerText, baseX, baseY, 0.5f, 1, 1, 1, 1);
 
-    // Render top N players
+    // Render top N players (skip "Unknown")
     const int maxEntries = 6;
-    int entryCount = static_cast<int>(sortedScores.size());
-    for (int i = 0; i < ((maxEntries < entryCount) ? maxEntries : entryCount); ++i)
+    int displayedCount = 0;
+    for (const auto& entry : sortedScores)
     {
-        const auto& entry = sortedScores[i];
+        if (displayedCount >= maxEntries)
+            break;
+
         uint32_t playerId = entry.first;
         uint32_t score = entry.second;
 
-        // Look up player name
-        std::string displayName = "P" + std::to_string(playerId);
         auto it = localPlayerNames.find(playerId);
-        if (it != localPlayerNames.end())
-            displayName = it->second;
+        if (it == localPlayerNames.end() || it->second == "Unknown")
+            continue;
 
+        const std::string& displayName = it->second;
         std::string line = displayName + " : " + std::to_string(score);
 
         const char* txt = line.c_str();
@@ -473,15 +473,18 @@ void RenderScoreboardText(int Location = 0)
         AEGfxGetPrintSize(pFont, txt, 0.5f, &lineW, &lineH);
 
         float textX = (Location == 1) ? -lineW / 2.0f : 1.0f - lineW - 0.05f;
-        float textY = baseY - ((i + 1) * 0.07f);
+        float textY = baseY - ((displayedCount + 1) * 0.07f);
 
         // Set color: gold for winner, white for others
-        if (i == 0)
+        if (displayedCount == 0)
             AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1.0f, 0.84f, 0.0f, 1);  // Gold
         else
             AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1, 1, 1, 1);
+
+        ++displayedCount;
     }
 }
+
 
 #pragma endregion
 
