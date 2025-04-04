@@ -18,6 +18,8 @@
 #include <ws2tcpip.h>
 #include <windows.h>
 #include <iostream>
+#include <iomanip>  // for std::put_time
+#include <sstream>  // for std::ostringstream
 #include <thread>
 #include <atomic>
 #include <conio.h>
@@ -41,6 +43,9 @@ constexpr int MAX_LOCAL_ENTITIES = 500;     // Local pool for bullets, power-ups
 constexpr int MAX_LOCAL_ENTITIES_SPAWN_RATE = 10;
 constexpr int MAX_PLAYERS = 4000; // Maximum number for score-count
 constexpr int VICTORY_SCORE = 500; // Client based intended
+
+std::map<uint32_t, std::string> gScoreUpdateTimestamps;
+
 
 #pragma region Helper Func
 // ----------------------------------------------------------------------
@@ -339,10 +344,12 @@ void RenderScoreboardText(int Location = 0)
     // Lock and copy the current scoreboard
     std::vector<std::pair<uint32_t, uint32_t>> sortedScores;
     std::map<uint32_t, std::string> localPlayerNames;
+    std::map<uint32_t, std::string> localScoreTimes;
     {
         std::lock_guard<std::mutex> lock(gScoreMutex);
         sortedScores.assign(gScoreBoard.begin(), gScoreBoard.end());
-        localPlayerNames = gPlayerNames; // Copy player names
+        localPlayerNames = gPlayerNames;
+        localScoreTimes = gScoreUpdateTimestamps; // Copy update times
     }
 
     // Sort by score (descending)
@@ -357,9 +364,8 @@ void RenderScoreboardText(int Location = 0)
     f32 w = 1.0f, h = 1.0f;
     AEGfxGetPrintSize(pFont, headerText, 0.5f, &w, &h);
 
-    float startY = 1.2f; // Start off-screen above
-    float endY = 0.1f;   // Final resting Y center offset
-
+    float startY = 1.2f;
+    float endY = 0.1f;
     float animT = scoreboardAnimTimer / scoreboardAnimDuration;
     if (animT > 1.0f) animT = 1.0f;
 
@@ -379,13 +385,22 @@ void RenderScoreboardText(int Location = 0)
         uint32_t playerId = entry.first;
         uint32_t score = entry.second;
 
-        // Look up player name
         std::string displayName = "P" + std::to_string(playerId);
         auto it = localPlayerNames.find(playerId);
         if (it != localPlayerNames.end())
             displayName = it->second;
 
-        std::string line = displayName + " : " + std::to_string(score);
+        // Skip unknown names
+        if (displayName == "Unknown")
+            continue;
+
+        // Get last update time
+        std::string timeStr = "--:--:--";
+        auto timeIt = localScoreTimes.find(playerId);
+        if (timeIt != localScoreTimes.end())
+            timeStr = timeIt->second;
+
+        std::string line = displayName + " : " + std::to_string(score) + " @ " + timeStr;
 
         const char* txt = line.c_str();
         f32 lineW = 1.0f, lineH = 1.0f;
@@ -394,7 +409,6 @@ void RenderScoreboardText(int Location = 0)
         float textX = (Location == 1) ? -lineW / 2.0f : 1.0f - lineW - 0.05f;
         float textY = baseY - ((i + 1) * 0.07f);
 
-        // Set color: gold for winner, white for others
         if (i == 0)
             AEGfxPrint(pFont, txt, textX, textY, 0.5f, 1.0f, 0.84f, 0.0f, 1);  // Gold
         else
@@ -751,26 +765,39 @@ void ReceiveThread(SOCKET socket)
 
             std::lock_guard<std::mutex> lock(gScoreMutex);
             gScoreBoard.clear();
-            gPlayerNames.clear(); 
+            gPlayerNames.clear();
+
+            auto now = std::chrono::system_clock::now();
+            std::time_t timeNow = std::chrono::system_clock::to_time_t(now);
+            std::tm localTime;
+            localtime_s(&localTime, &timeNow);
+
+            char timeStr[16];
+            std::strftime(timeStr, sizeof(timeStr), "%H:%M:%S", &localTime);
 
             for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
-                gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
-                gPlayerNames[pkt->scores[i].playerId] = pkt->scores[i].name;
+                uint32_t playerId = pkt->scores[i].playerId;
+                gScoreBoard[playerId] = pkt->scores[i].score;
+                gPlayerNames[playerId] = pkt->scores[i].name;
+
+                // Store time of update only if it's a new score or player
+                if (gScoreUpdateTimestamps[playerId] != timeStr)
+                    gScoreUpdateTimestamps[playerId] = timeStr;
             }
 
+            // Win check
             uint32_t highestScore = 0;
             for (uint32_t i = 0; i < pkt->scoreCount; ++i) {
-                gScoreBoard[pkt->scores[i].playerId] = pkt->scores[i].score;
                 if (pkt->scores[i].score > highestScore)
                     highestScore = pkt->scores[i].score;
             }
 
-            // Win condition check (e.g., 500 points)
             if (highestScore >= VICTORY_SCORE && gameState == GameState::Playing) {
                 gameState = GameState::Win;
                 std::cout << "[GAME STATE] Game over! A player has reached 500 points.\n";
             }
-        }
+            }
+
         if (packetType == NAME_REJECTED)
         {
             std::cout << "[SERVER] Name already taken. Please restart and try a different name.\n";
